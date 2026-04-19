@@ -3,7 +3,7 @@ import type { RunRecord } from '../types';
 import { getRunHistory } from '../api';
 
 function humanize(value: string) {
-  return value.replaceAll('_', ' ').toLowerCase().replace(/\b\w/g, letter => letter.toUpperCase());
+  return value.replace(/_/g, ' ').toLowerCase().replace(/\b\w/g, (letter: string) => letter.toUpperCase());
 }
 
 export function RunsPage() {

@@ -17,6 +17,7 @@ function ReviewPage() {
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [detail, setDetail] = useState<DraftDetailType | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
+  const [activeVariantIndex, setActiveVariantIndex] = useState(0);
 
   const [busy, setBusy] = useState(false);
   const [exitingIds, setExitingIds] = useState<Set<number>>(new Set());
@@ -52,6 +53,7 @@ function ReviewPage() {
     setSelectedId(id);
     setDetailLoading(true);
     setDetail(null);
+    setActiveVariantIndex(0);
     try {
       setDetail(await getDraftDetail(id));
     } catch {
@@ -153,8 +155,21 @@ function ReviewPage() {
 
       case 'a':
       case 'A': {
-        if (detail && detail.variants[0]) {
-          void handleApprove(detail.variants[0].id);
+        const activeVariant = detail?.variants[activeVariantIndex] ?? detail?.variants[0];
+        if (activeVariant) {
+          void handleApprove(activeVariant.id);
+        }
+        break;
+      }
+
+      case '1':
+      case '2':
+      case '3': {
+        if (detail) {
+          const nextIndex = Number(key) - 1;
+          if (nextIndex >= 0 && nextIndex < detail.variants.length) {
+            setActiveVariantIndex(nextIndex);
+          }
         }
         break;
       }
@@ -173,7 +188,7 @@ function ReviewPage() {
         break;
       }
     }
-  }, [sortedSummaries, selectedId, detail, loadQueue, selectDraft]);
+  }, [sortedSummaries, selectedId, detail, activeVariantIndex, loadQueue, selectDraft]);
 
   useKeyboard(handleKey, true);
 
@@ -194,6 +209,8 @@ function ReviewPage() {
           draft={detail}
           loading={detailLoading}
           busy={busy}
+          activeVariantIndex={activeVariantIndex}
+          onVariantSelect={setActiveVariantIndex}
           onApprove={variantId => void handleApprove(variantId)}
           onDismiss={() => selectedId !== null && void handleDismiss(selectedId)}
         />

@@ -1,4 +1,3 @@
-import { useState } from 'react';
 import type { DraftDetail as DraftDetailType } from '../types';
 import { OriginalEmailSection } from './OriginalEmailSection';
 import { AnalysisSection } from './AnalysisSection';
@@ -8,6 +7,8 @@ type Props = {
   draft: DraftDetailType | null;
   loading: boolean;
   busy: boolean;
+  activeVariantIndex: number;
+  onVariantSelect: (index: number) => void;
   onApprove: (variantId: number) => void;
   onDismiss: () => void;
 };
@@ -16,9 +17,15 @@ function formatDate(value: string) {
   return new Date(value).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
 }
 
-export function DraftDetail({ draft, loading, busy, onApprove, onDismiss }: Props) {
-  const [activeVariantIndex, setActiveVariantIndex] = useState(0);
-
+export function DraftDetail({
+  draft,
+  loading,
+  busy,
+  activeVariantIndex,
+  onVariantSelect,
+  onApprove,
+  onDismiss,
+}: Props) {
   if (loading) {
     return (
       <div className="detail-empty">Loading…</div>
@@ -58,7 +65,7 @@ export function DraftDetail({ draft, loading, busy, onApprove, onDismiss }: Prop
           <VariantTabs
             variants={draft.variants}
             activeIndex={Math.min(activeVariantIndex, draft.variants.length - 1)}
-            onSelect={setActiveVariantIndex}
+            onSelect={onVariantSelect}
           />
         )}
       </div>

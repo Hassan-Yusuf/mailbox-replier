@@ -1,0 +1,12 @@
+/.dotnet/
+/**/bin/
+/**/obj/
+/**/.auth/
+/**/logs/
+*.db
+appsettings.Local.json
+emailcopilot-web/node_modules/
+emailcopilot-web/dist/
+src/EmailCopilot.Worker/wwwroot/*
+!src/EmailCopilot.Worker/wwwroot/.gitkeep
+.worktrees/

@@ -311,9 +311,9 @@ button, input, textarea, select { font: inherit; }
 
 /* Original email */
 .original-email-body {
-  font-family: 'Instrument Serif', serif;
-  font-size: 16px;
-  line-height: 1.7;
+  font-family: 'Plus Jakarta Sans', sans-serif;
+  font-size: 14px;
+  line-height: 1.75;
   color: var(--text-primary);
   white-space: pre-wrap;
 }
@@ -487,8 +487,23 @@ button, input, textarea, select { font: inherit; }
 .kbd-hints {
   margin-left: auto;
   display: flex;
-  gap: 4px;
+  gap: 12px;
   align-items: center;
+  flex-wrap: wrap;
+}
+
+.kbd-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.kbd-label {
+  font-size: 11px;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-right: 2px;
 }
 
 kbd {

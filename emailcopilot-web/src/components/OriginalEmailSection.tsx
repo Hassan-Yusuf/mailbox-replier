@@ -42,7 +42,9 @@ export function OriginalEmailSection({ draftId }: Props) {
             <div className="original-email-body">{body}</div>
           )}
           {state === 'loaded' && !body && (
-            <div className="original-email-fallback">Email body not available for this draft.</div>
+            <div className="original-email-fallback">
+              Email body not available for this draft. Older drafts may have been created before original-email capture was enabled.
+            </div>
           )}
           {state === 'error' && (
             <div className="original-email-fallback">Could not load email body.</div>

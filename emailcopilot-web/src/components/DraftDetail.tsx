@@ -76,16 +76,25 @@ export function DraftDetail({
           disabled={busy || !activeVariant}
           onClick={() => activeVariant && onApprove(activeVariant.id)}
         >
-          Approve this draft <kbd style={{ background: 'rgba(255,255,255,0.2)', color: '#fff' }}>↵</kbd>
+          Approve this draft <kbd style={{ background: 'rgba(255,255,255,0.2)', color: '#fff' }}>Enter</kbd>
         </button>
         <button className="btn-dismiss" disabled={busy} onClick={onDismiss}>
           Dismiss <kbd>D</kbd>
         </button>
-        <div className="kbd-hints">
-          <kbd>J</kbd><kbd>K</kbd>
-          {draft.variants.length > 1 && draft.variants.map((_, i) => (
-            <kbd key={i}>{i + 1}</kbd>
-          ))}
+        <div className="kbd-hints" aria-label="Keyboard shortcuts">
+          <span className="kbd-group">
+            <span className="kbd-label">Queue</span>
+            <kbd>J</kbd>
+            <kbd>K</kbd>
+          </span>
+          {draft.variants.length > 1 && (
+            <span className="kbd-group">
+              <span className="kbd-label">Variants</span>
+              {draft.variants.map((_, i) => (
+                <kbd key={i}>{i + 1}</kbd>
+              ))}
+            </span>
+          )}
         </div>
       </div>
     </>

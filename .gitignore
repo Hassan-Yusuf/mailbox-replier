@@ -10,3 +10,10 @@ emailcopilot-web/dist/
 src/EmailCopilot.Worker/wwwroot/*
 !src/EmailCopilot.Worker/wwwroot/.gitkeep
 .worktrees/
+.vscode/
+.claude/
+.codex-temp/
+graphify-out/
+.graphify_*
+temp-*.log
+temp-*.err.log

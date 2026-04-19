@@ -1,0 +1,39 @@
+$ports = 5173..5176
+
+# Kill Vite/node listeners on common dev ports
+$portPids = Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue |
+    Where-Object { $_.LocalPort -in $ports } |
+    Select-Object -ExpandProperty OwningProcess -Unique
+
+if ($portPids) {
+    Write-Host "Stopping port listeners:" $portPids
+    Stop-Process -Id $portPids -Force -ErrorAction SilentlyContinue
+}
+
+# Kill repo-related PowerShell sessions
+$repoShells = Get-CimInstance Win32_Process |
+    Where-Object {
+        $_.Name -eq 'powershell.exe' -and
+        $_.CommandLine -match 'mailbox-replier|EmailCopilot.Worker|npm run dev|vite'
+    } |
+    Select-Object -ExpandProperty ProcessId -Unique
+
+if ($repoShells) {
+    Write-Host "Stopping repo PowerShell sessions:" $repoShells
+    Stop-Process -Id $repoShells -Force -ErrorAction SilentlyContinue
+}
+
+# Kill actual EmailCopilot.Worker dotnet runs only
+$workerPids = Get-CimInstance Win32_Process |
+    Where-Object {
+        $_.Name -eq 'dotnet.exe' -and
+        $_.CommandLine -match 'EmailCopilot.Worker|EmailCopilot.Worker.dll|dotnet run --project src/EmailCopilot.Worker'
+    } |
+    Select-Object -ExpandProperty ProcessId -Unique
+
+if ($workerPids) {
+    Write-Host "Stopping worker dotnet processes:" $workerPids
+    Stop-Process -Id $workerPids -Force -ErrorAction SilentlyContinue
+}
+
+Write-Host "Cleanup complete."

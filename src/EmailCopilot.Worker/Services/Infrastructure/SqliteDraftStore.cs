@@ -542,6 +542,19 @@ public sealed class SqliteDraftStore : IDraftStore
             variants);
     }
 
+    public async Task<string?> GetOriginalEmailBodyAsync(long id, CancellationToken cancellationToken)
+    {
+        await using var connection = new SqliteConnection(_connectionString);
+        await connection.OpenAsync(cancellationToken);
+
+        await using var command = connection.CreateCommand();
+        command.CommandText = "SELECT OriginalEmailBody FROM DraftSets WHERE Id = $id;";
+        command.Parameters.AddWithValue("$id", id);
+
+        var result = await command.ExecuteScalarAsync(cancellationToken);
+        return result is DBNull or null ? null : (string)result;
+    }
+
     public async Task<IReadOnlyList<SkippedEmailRecord>> GetSkippedEmailsAsync(int skip, int take, CancellationToken cancellationToken)
     {
         await using var connection = new SqliteConnection(_connectionString);

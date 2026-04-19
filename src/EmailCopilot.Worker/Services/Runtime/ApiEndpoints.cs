@@ -53,6 +53,12 @@ public static class ApiEndpoints
                 draftSet.Analysis));
         });
 
+        api.MapGet("/drafts/{id:long}/originalEmail", async (long id, IDraftStore draftStore, CancellationToken cancellationToken) =>
+        {
+            var body = await draftStore.GetOriginalEmailBodyAsync(id, cancellationToken);
+            return Results.Ok(new { body });
+        });
+
         api.MapPost("/drafts/{id:long}/approve", async (long id, ApproveDraftRequest? request, IDraftStore draftStore, IOutlookDraftPusher draftPusher, ILoggerFactory loggerFactory, CancellationToken cancellationToken) =>
         {
             if (request is null || request.VariantId <= 0)

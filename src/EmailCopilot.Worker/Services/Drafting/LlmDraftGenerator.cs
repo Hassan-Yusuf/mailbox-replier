@@ -22,19 +22,22 @@ public sealed class LlmDraftGenerator : IReplyDraftGenerator
     private readonly ILogger<LlmDraftGenerator> _logger;
     private readonly GreetingPolicy _greetingPolicy;
     private readonly AvoidPhraseEmbeddingFilter _avoidFilter;
+    private readonly IEmbeddingClient _embeddingClient;
 
     public LlmDraftGenerator(
         HttpClient httpClient,
         IOptions<LlmOptions> options,
         ILogger<LlmDraftGenerator> logger,
         GreetingPolicy greetingPolicy,
-        AvoidPhraseEmbeddingFilter avoidFilter)
+        AvoidPhraseEmbeddingFilter avoidFilter,
+        IEmbeddingClient embeddingClient)
     {
         _httpClient = httpClient;
         _options = options.Value;
         _logger = logger;
         _greetingPolicy = greetingPolicy;
         _avoidFilter = avoidFilter;
+        _embeddingClient = embeddingClient;
     }
 
     public bool UseMock => _options.UseMock;
@@ -66,6 +69,7 @@ public sealed class LlmDraftGenerator : IReplyDraftGenerator
                 MaxPromptBodyCharacters);
         }
 
+        var selectedExamples = await SelectExamplesAsync(email, styleExamples, cancellationToken);
         var retryIssues = Array.Empty<string>();
 
         for (var attempt = 1; attempt <= MaxAttempts; attempt++)
@@ -79,7 +83,7 @@ public sealed class LlmDraftGenerator : IReplyDraftGenerator
                         new ChatMessage(
                             "system",
                             "You draft email replies. Return only the email reply body. Do not add markdown, code fences, or a subject line."),
-                        new ChatMessage("user", BuildPrompt(email, styleProfile, styleExamples, analysis, analysis.RequiresPersonalConfirmation, promptBody, senderFirstName, replyShape, replyShapeLabel, mustAddressAsks, retryIssues, _options.AvoidPhrasesMode))
+                        new ChatMessage("user", BuildPrompt(email, styleProfile, selectedExamples, analysis, analysis.RequiresPersonalConfirmation, promptBody, senderFirstName, replyShape, replyShapeLabel, mustAddressAsks, retryIssues, _options.AvoidPhrasesMode))
                     },
                     0.25,
                     220);
@@ -242,7 +246,8 @@ public sealed class LlmDraftGenerator : IReplyDraftGenerator
         }
         else
         {
-            var selectedExamples = SelectPromptExamples(email.MessageId, styleExamples);
+            // Examples are already pre-selected by GenerateDraftAsync (similarity-ranked or random fallback).
+            var selectedExamples = styleExamples;
             var voiceSignals = BuildVoiceSignals(
                 selectedExamples,
                 styleProfile.ObservedDiscourseMarkers ?? Array.Empty<DiscourseMarkerObservation>());
@@ -345,7 +350,128 @@ Email body:
 """;
     }
 
-    private static IReadOnlyList<StyleExample> SelectPromptExamples(
+    private const int SimilarityQueryTextMaxChars = 300;
+    private const int SimilaritySubjectMinChars = 10;
+    private const int SimilarityBodyMinChars = 50;
+
+    private static readonly Regex ReplyForwardPrefixRegex = new(
+        @"^\s*(re|fwd|fw|aw)\s*:\s*",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.Compiled);
+
+    private async Task<IReadOnlyList<StyleExample>> SelectExamplesAsync(
+        IncomingEmail email,
+        IReadOnlyList<StyleExample> styleExamples,
+        CancellationToken cancellationToken)
+    {
+        if (styleExamples.Count == 0)
+        {
+            return Array.Empty<StyleExample>();
+        }
+
+        if (!_options.SimilarExamples.Enabled || styleExamples.Count <= 3)
+        {
+            return SelectPromptExamples(email.MessageId, styleExamples);
+        }
+
+        var queryText = BuildSimilarityQueryText(email);
+        if (queryText is null)
+        {
+            return SelectPromptExamples(email.MessageId, styleExamples);
+        }
+
+        try
+        {
+            var ranked = await RankExamplesBySimilarityAsync(
+                queryText,
+                styleExamples,
+                _embeddingClient,
+                _options.SimilarExamples.TopN,
+                cancellationToken);
+
+            _logger.LogInformation(
+                "Selected {Count} similar example(s) for UID {Uid} (top-N={TopN}).",
+                ranked.Count,
+                email.ImapUid,
+                _options.SimilarExamples.TopN);
+
+            return ranked;
+        }
+        catch (Exception ex) when (ex is HttpRequestException or InvalidOperationException or OperationCanceledException && !cancellationToken.IsCancellationRequested)
+        {
+            _logger.LogWarning(
+                ex,
+                "Similar-examples embedding failed; falling back to seeded random selection.");
+            return SelectPromptExamples(email.MessageId, styleExamples);
+        }
+    }
+
+    internal static async Task<IReadOnlyList<StyleExample>> RankExamplesBySimilarityAsync(
+        string queryText,
+        IReadOnlyList<StyleExample> styleExamples,
+        IEmbeddingClient embeddingClient,
+        int topN,
+        CancellationToken cancellationToken)
+    {
+        if (styleExamples.Count == 0)
+        {
+            return Array.Empty<StyleExample>();
+        }
+
+        var corpus = styleExamples
+            .Select(static e => Truncate(e.ExampleBody ?? string.Empty, SimilarityQueryTextMaxChars))
+            .ToArray();
+
+        var inputs = new string[corpus.Length + 1];
+        inputs[0] = queryText;
+        Array.Copy(corpus, 0, inputs, 1, corpus.Length);
+
+        var vectors = await embeddingClient.EmbedAsync(inputs, cancellationToken);
+        if (vectors.Count != inputs.Length)
+        {
+            throw new InvalidOperationException(
+                $"Expected {inputs.Length} vectors from similarity batch embed, got {vectors.Count}.");
+        }
+
+        var queryVector = vectors[0];
+        var requestedTopN = Math.Min(Math.Max(topN, 1), styleExamples.Count);
+
+        return styleExamples
+            .Select((example, index) => new
+            {
+                Example = example,
+                Cosine = AvoidPhraseEmbeddingFilter.Cosine(queryVector, vectors[index + 1])
+            })
+            .OrderByDescending(static r => r.Cosine)
+            .ThenByDescending(static r => r.Example.SentAtUtc)
+            .Take(requestedTopN)
+            .Select(r => r.Example)
+            .ToArray();
+    }
+
+    internal static string? BuildSimilarityQueryTextForTesting(IncomingEmail email) =>
+        BuildSimilarityQueryText(email);
+
+    private static string? BuildSimilarityQueryText(IncomingEmail email)
+    {
+        var subject = ReplyForwardPrefixRegex.Replace(email.Subject ?? string.Empty, string.Empty).Trim();
+        if (subject.Length >= SimilaritySubjectMinChars)
+        {
+            return Truncate(subject, SimilarityQueryTextMaxChars);
+        }
+
+        var body = (email.BodyText ?? string.Empty).Trim();
+        if (body.Length >= SimilarityBodyMinChars)
+        {
+            return Truncate(body, SimilarityQueryTextMaxChars);
+        }
+
+        return null;
+    }
+
+    private static string Truncate(string value, int maxChars) =>
+        value.Length <= maxChars ? value : value[..maxChars];
+
+    internal static IReadOnlyList<StyleExample> SelectPromptExamples(
         string messageId,
         IReadOnlyList<StyleExample> styleExamples)
     {

@@ -13,6 +13,15 @@ public sealed class LlmOptions
     public AvoidPhrasesMode AvoidPhrasesMode { get; set; } = AvoidPhrasesMode.StaticFallback;
 
     public AvoidFilterOptions AvoidFilter { get; set; } = new();
+
+    public SimilarExamplesOptions SimilarExamples { get; set; } = new();
+}
+
+public sealed class SimilarExamplesOptions
+{
+    public bool Enabled { get; set; } = false;
+
+    public int TopN { get; set; } = 4;
 }
 
 public enum AvoidPhrasesMode

@@ -91,6 +91,7 @@ public sealed class DraftEligibilityAssessorTests
             0.6,
             0.1,
             0.35,
+            0.02,
             0.1,
             0.2,
             0.05,

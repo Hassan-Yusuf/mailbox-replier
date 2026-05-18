@@ -4,6 +4,9 @@ public sealed class WorkflowAcknowledgementRule : BuiltInClassificationRule
 {
     public override string RuleName => "BUILT_IN:WORKFLOW_ACKNOWLEDGEMENT";
     public override string ReasonCode => ClassificationReasonCodes.WorkflowAcknowledgement;
+    public override string Description =>
+        "Automated workflow acknowledgement (e.g., job application received).";
+    public override RuleCategory Category => RuleCategory.Workflow;
 
     public override RuleEvaluation Evaluate(IncomingEmail email)
     {

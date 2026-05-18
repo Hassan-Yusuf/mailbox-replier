@@ -20,6 +20,13 @@ public sealed class NoReplySenderRule : BuiltInClassificationRule
         "otp"
     ];
 
+    // Common English words like "welcome" are too broad for Contains semantics —
+    // they'd match legitimate human aliases (alex.welcome@...). Use StartsWith only.
+    private static readonly string[] NoReplyLocalPartPrefixes =
+    [
+        "welcome"
+    ];
+
     private static readonly string[] KnownNoReplyDomains =
     [
         "amazon.co.uk",
@@ -39,6 +46,9 @@ public sealed class NoReplySenderRule : BuiltInClassificationRule
 
     public override string RuleName => "BUILT_IN:NO_REPLY_PLATFORM_SENDER";
     public override string ReasonCode => ClassificationReasonCodes.NoReplySender;
+    public override string Description =>
+        "Sender appears to be a no-reply or automated platform address.";
+    public override RuleCategory Category => RuleCategory.AutomatedSender;
 
     public override RuleEvaluation Evaluate(IncomingEmail email)
     {
@@ -54,6 +64,12 @@ public sealed class NoReplySenderRule : BuiltInClassificationRule
         if (NoReplyLocalPartMarkers.Any(marker =>
                 localPart.StartsWith(marker, StringComparison.Ordinal) ||
                 localPart.Contains(marker, StringComparison.Ordinal)))
+        {
+            return Matched(RuleName, ReasonCode, $"address={fromAddress}");
+        }
+
+        if (NoReplyLocalPartPrefixes.Any(prefix =>
+                localPart.StartsWith(prefix, StringComparison.Ordinal)))
         {
             return Matched(RuleName, ReasonCode, $"address={fromAddress}");
         }

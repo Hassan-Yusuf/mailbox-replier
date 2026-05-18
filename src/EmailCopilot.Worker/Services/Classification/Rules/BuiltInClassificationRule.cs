@@ -6,6 +6,10 @@ public abstract class BuiltInClassificationRule : IExclusionRule
 
     public abstract string ReasonCode { get; }
 
+    public abstract string Description { get; }
+
+    public abstract RuleCategory Category { get; }
+
     public abstract RuleEvaluation Evaluate(IncomingEmail email);
 
     protected static RuleEvaluation Matched(string ruleName, string reasonCode, string? detail = null) =>

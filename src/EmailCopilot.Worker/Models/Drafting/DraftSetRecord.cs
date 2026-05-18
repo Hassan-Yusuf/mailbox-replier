@@ -28,5 +28,13 @@ public sealed class DraftSetRecord
 
     public string? OriginalEmailBody { get; init; }
 
+    public double? AggregateConfidenceScore { get; init; }
+
+    public ConfidenceTier? ConfidenceTier { get; init; }
+
+    public string? AssignedToUserId { get; init; }
+
+    public string? OwnerUserId { get; init; }
+
     public IReadOnlyList<DraftVariantRecord> Variants { get; init; } = [];
 }

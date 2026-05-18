@@ -147,25 +147,34 @@ Do not casually collapse:
 
 `EmailAddress` value object, async classification, `DecisionTrace`, named rules, classification pipeline, style contamination hardening, `ScanInboxUseCase`, run records, NUnit suite.
 
-### Phase 2 — Structurally done; polish remaining
+### Phase 2 — Done
 
-Done:
 - `DraftSet` / `DraftVariant` / `DraftStrategy` persistence
 - One-draft and multi-variant paths share the same model
 - `ReplyShapePlanner` with shape-aware `LlmDraftGenerator`
 - `ReplyScopeEvaluator` gate
 - Docs and README
 
-Remaining before calling phase 2 a clean checkpoint:
-1. Keep `PHASE2_SCOPE.md` aligned with code naming (code uses "reply shape"; doc still says "intent" in places)
-2. Add a thin CLI presenter (`DraftSetConsoleWriter` or similar) so variant sets surface as a user-facing contract, not just `ILogger` lines
-3. Add tie-break / minimum-spread logic in `ReplyShapePlanner` so near-duplicate shapes are not emitted
-4. Add regression tests: single-draft → 1-variant set, multi-variant → distinct shapes, scope-blocked → `DRAFT_INELIGIBLE`
-5. Verify `README.md` decision-order section matches code's actual stage ordering
+The original phase-2 polish item for a CLI presenter (`DraftSetConsoleWriter`) is obsoleted by the React frontend (`emailcopilot-web/`) — the user-facing contract for draft sets now lives there.
 
-### Phase 3 — Not started
+Minor follow-ups that can be picked up alongside Phase 3 work:
+- Keep `PHASE2_SCOPE.md` aligned with code naming (code uses "reply shape"; doc still says "intent" in places)
+- Tie-break / minimum-spread logic in `ReplyShapePlanner` so near-duplicate shapes are not emitted
+- Regression tests: single-draft → 1-variant set, multi-variant → distinct shapes, scope-blocked → `DRAFT_INELIGIBLE`
+- Verify `README.md` decision-order section matches code's actual stage ordering
 
-Built-in rule metadata/policy catalog, user allow rules, richer reply-scope modes, UI-facing decision transparency, team/CRM workflow layers.
+### Phase 3 — Underway
+
+Frontend shipped (`emailcopilot-web/`) — delivers the review workflow for draft sets called for in `PHASE3_OUTLINE.md` §2 (pending sets, variant inspection, selection, dismissal).
+
+Locked specs ready to implement:
+- AvoidPhrases v1 (negative style constraints) — see [docs/AVOID_PHRASES_V1.md](docs/AVOID_PHRASES_V1.md)
+
+Not yet started:
+- Settings / policy layer (built-in rule metadata, user allow rules, configurable toggles)
+- Confidence and approval model (`SuggestOnly` / `ReviewBeforeSend`)
+- Feedback capture (selected / dismissed / edited variants)
+- Shared mailbox / business foundations (draft ownership, `AssignedToUserId`, audit trail)
 
 ---
 

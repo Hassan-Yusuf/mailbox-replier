@@ -18,6 +18,8 @@ public sealed class DraftVariantRecord
 
     public string? GroundingWarning { get; init; }
 
+    public string? CoverageWarning { get; init; }
+
     public bool WasSelected { get; init; }
 
     public bool WasEdited { get; init; }

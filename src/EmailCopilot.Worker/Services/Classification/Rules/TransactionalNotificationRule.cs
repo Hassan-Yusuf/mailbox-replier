@@ -4,6 +4,9 @@ public sealed class TransactionalNotificationRule : BuiltInClassificationRule
 {
     public override string RuleName => "BUILT_IN:TRANSACTIONAL_NOTIFICATION";
     public override string ReasonCode => ClassificationReasonCodes.TransactionalNotification;
+    public override string Description =>
+        "Order, receipt, delivery, payment, or other transactional notification.";
+    public override RuleCategory Category => RuleCategory.Transactional;
 
     public override RuleEvaluation Evaluate(IncomingEmail email)
     {

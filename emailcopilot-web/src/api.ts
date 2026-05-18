@@ -1,4 +1,4 @@
-import type { DraftDetail, DraftSummary, RunRecord, SkippedEmail } from './types';
+import type { DraftDetail, DraftSummary, PolicyRule, RunRecord, SkippedEmail, WorkflowConfig } from './types';
 
 async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, init);
@@ -37,16 +37,25 @@ export async function getOriginalEmail(id: number): Promise<{ body: string | nul
   return fetchJson<{ body: string | null }>(`/api/drafts/${id}/originalEmail`);
 }
 
-export async function approveDraft(draftId: number, variantId: number): Promise<void> {
+export async function approveDraft(draftId: number, variantId: number, editedBody?: string): Promise<void> {
+  const payload: { variantId: number; editedBody?: string } = { variantId };
+  if (editedBody !== undefined) {
+    payload.editedBody = editedBody;
+  }
   return fetchJson<void>(`/api/drafts/${draftId}/approve`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ variantId }),
+    body: JSON.stringify(payload),
   });
 }
 
-export async function dismissDraft(draftId: number): Promise<void> {
-  return fetchJson<void>(`/api/drafts/${draftId}/dismiss`, { method: 'POST' });
+export async function dismissDraft(draftId: number, reason?: string): Promise<void> {
+  const hasReason = reason !== undefined && reason.trim().length > 0;
+  return fetchJson<void>(`/api/drafts/${draftId}/dismiss`, {
+    method: 'POST',
+    headers: hasReason ? { 'Content-Type': 'application/json' } : undefined,
+    body: hasReason ? JSON.stringify({ reason: reason!.trim() }) : undefined,
+  });
 }
 
 export async function getSkippedEmails(): Promise<SkippedEmail[]> {
@@ -55,4 +64,20 @@ export async function getSkippedEmails(): Promise<SkippedEmail[]> {
 
 export async function getRunHistory(): Promise<RunRecord[]> {
   return fetchJson<RunRecord[]>('/api/runs?skip=0&take=20');
+}
+
+export async function getPolicyRules(): Promise<PolicyRule[]> {
+  return fetchJson<PolicyRule[]>('/api/policies/rules');
+}
+
+export async function setPolicyRule(ruleId: string, enabled: boolean): Promise<void> {
+  return fetchJson<void>(`/api/policies/rules/${encodeURIComponent(ruleId)}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ enabled }),
+  });
+}
+
+export async function getWorkflowConfig(): Promise<WorkflowConfig> {
+  return fetchJson<WorkflowConfig>('/api/config/workflow');
 }

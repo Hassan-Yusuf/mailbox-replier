@@ -35,11 +35,16 @@ public sealed class ReplyShapePlannerTests
                 UrgencyLevels.Low,
                 false));
 
+        var shapes = result.Options.Select(option => option.Shape).ToArray();
         Assert.That(result.Options.Count, Is.GreaterThan(1));
-        Assert.That(result.Options.Select(option => option.Shape), Does.Contain(ReplyShapes.Acknowledge));
-        Assert.That(result.Options.Select(option => option.Shape), Does.Contain(ReplyShapes.AcknowledgeAndAsk));
-        Assert.That(result.Options.Select(option => option.Shape), Does.Contain(ReplyShapes.ConfirmAndRequest));
-        Assert.That(result.Options.Select(option => option.Shape), Does.Contain(ReplyShapes.ConfirmAndClose));
+        Assert.That(
+            shapes,
+            Does.Contain(ReplyShapes.Acknowledge).Or.Contain(ReplyShapes.AcknowledgeAndAsk),
+            "expected at least one acknowledge-family shape");
+        Assert.That(
+            shapes,
+            Does.Contain(ReplyShapes.ConfirmAndRequest).Or.Contain(ReplyShapes.ConfirmAndClose),
+            "expected at least one confirm-family shape");
     }
 
     [Test]
@@ -104,11 +109,20 @@ public sealed class ReplyShapePlannerTests
                 UrgencyLevels.Medium,
                 false));
 
+        var shapes = result.Options.Select(option => option.Shape).ToArray();
         Assert.That(result.Options.Count, Is.GreaterThan(1));
-        Assert.That(result.Options.Select(option => option.Shape), Does.Contain(ReplyShapes.Acknowledge));
-        Assert.That(result.Options.Select(option => option.Shape), Does.Contain(ReplyShapes.ConfirmAndRequest));
-        Assert.That(result.Options.Select(option => option.Shape), Does.Contain(ReplyShapes.ConfirmAndClose));
-        Assert.That(result.Options.Select(option => option.Shape), Does.Not.Contain(ReplyShapes.AcknowledgeAndAsk));
+        Assert.That(shapes, Does.Contain(ReplyShapes.Acknowledge));
+        Assert.That(shapes, Does.Not.Contain(ReplyShapes.AcknowledgeAndAsk));
+        Assert.That(
+            shapes,
+            Does.Contain(ReplyShapes.ConfirmAndRequest).Or.Contain(ReplyShapes.ConfirmAndClose),
+            "expected at least one confirm-family shape");
+        var confirmFamilyCount = shapes.Count(static shape =>
+            shape == ReplyShapes.ConfirmAndRequest || shape == ReplyShapes.ConfirmAndClose);
+        Assert.That(
+            confirmFamilyCount,
+            Is.EqualTo(1),
+            "minimum-spread should keep only one confirm-family shape when scores are within 0.10");
     }
 
     [Test]
@@ -147,6 +161,58 @@ public sealed class ReplyShapePlannerTests
         Assert.That(result.Options[0].Shape, Is.EqualTo(ReplyShapes.DirectAnswer));
     }
 
+    [Test]
+    public void Should_gate_direct_answer_when_email_asks_unanswerable_factual_question()
+    {
+        var result = _planner.Plan(
+            CreateEmail("Is there a dehumidifier at the property? How many do you have?"),
+            CreateStyleProfile(),
+            new EmailRequestAnalysis(
+                [new EmailAsk("Is there a dehumidifier at the property?", AskTypes.Question, false)],
+                [],
+                [],
+                UrgencyLevels.Medium,
+                false));
+
+        Assert.That(result.Options.Select(option => option.Shape), Does.Not.Contain(ReplyShapes.DirectAnswer));
+        Assert.That(result.Options[0].Shape, Is.EqualTo(ReplyShapes.AcknowledgeAndAsk));
+    }
+
+    [Test]
+    public void Should_gate_direct_answer_inside_branch_options_when_unanswerable_factual_question()
+    {
+        var result = _planner.Plan(
+            CreateEmail("How many dehumidifiers do you have at the flat?"),
+            CreateStyleProfile(),
+            new EmailRequestAnalysis(
+                [new EmailAsk("How many dehumidifiers do you have?", AskTypes.Question, false)],
+                [new DecisionBranch("Property knowledge question", [ReplyShapes.DirectAnswer, ReplyShapes.Acknowledge, ReplyShapes.AcknowledgeAndAsk])],
+                [],
+                UrgencyLevels.Medium,
+                false));
+
+        Assert.That(result.Options.Select(option => option.Shape), Does.Not.Contain(ReplyShapes.DirectAnswer));
+        Assert.That(result.Options.Select(option => option.Shape), Does.Contain(ReplyShapes.AcknowledgeAndAsk));
+    }
+
+    [Test]
+    public void Should_keep_direct_answer_for_availability_question_even_with_personal_confirmation()
+    {
+        // "Can you work tomorrow?" is answerable in the user's voice (yes/no + placeholder time).
+        // The unanswerable-info gate should NOT fire here.
+        var result = _planner.Plan(
+            CreateEmail("Can you work tomorrow at the Ipswich box from 4pm to 11pm?"),
+            CreateStyleProfile(),
+            new EmailRequestAnalysis(
+                [new EmailAsk("Can you work tomorrow?", AskTypes.Question, false)],
+                [],
+                ["tomorrow"],
+                UrgencyLevels.High,
+                true));
+
+        Assert.That(result.Options[0].Shape, Is.EqualTo(ReplyShapes.DirectAnswer));
+    }
+
     private static IncomingEmail CreateEmail(string body) =>
         new(
             1,
@@ -172,6 +238,7 @@ public sealed class ReplyShapePlannerTests
             0.6,
             0.1,
             questionEndingRate,
+            0.02,
             0.05,
             0.3,
             0.1,

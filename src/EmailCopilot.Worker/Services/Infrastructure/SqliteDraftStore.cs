@@ -55,6 +55,7 @@ public sealed class SqliteDraftStore : IDraftStore
                 ConfidenceScore REAL NOT NULL,
                 StyleSegmentUsed TEXT NOT NULL,
                 GroundingWarning TEXT NULL,
+                CoverageWarning TEXT NULL,
                 WasSelected INTEGER NOT NULL DEFAULT 0,
                 WasEdited INTEGER NOT NULL DEFAULT 0,
                 EditedBody TEXT NULL,
@@ -163,13 +164,47 @@ public sealed class SqliteDraftStore : IDraftStore
 
         await strategyIndexCommand.ExecuteNonQueryAsync(cancellationToken);
 
-        await EnsureDraftSetColumnExistsAsync(connection, "SelectedVariantId", "INTEGER NULL", cancellationToken);
-        await EnsureDraftSetColumnExistsAsync(connection, "ReviewedAtUtc", "TEXT NULL", cancellationToken);
-        await EnsureDraftSetColumnExistsAsync(connection, "PushedToOutlookAtUtc", "TEXT NULL", cancellationToken);
-        await EnsureDraftSetColumnExistsAsync(connection, "SourceReceivedAtUtc", "TEXT NULL", cancellationToken);
-        await EnsureDraftSetColumnExistsAsync(connection, "AnalysisJson", "TEXT NULL", cancellationToken);
-        await EnsureDraftSetColumnExistsAsync(connection, "OriginalEmailBody", "TEXT NULL", cancellationToken);
-        await EnsureDraftVariantColumnExistsAsync(connection, "GroundingWarning", "TEXT NULL", cancellationToken);
+        await using var auditCommand = connection.CreateCommand();
+        auditCommand.CommandText =
+            """
+            CREATE TABLE IF NOT EXISTS DraftAuditEvents (
+                Id INTEGER PRIMARY KEY AUTOINCREMENT,
+                DraftSetId INTEGER NOT NULL,
+                EventType TEXT NOT NULL,
+                EventAtUtc TEXT NOT NULL,
+                ActorUserId TEXT NULL,
+                PayloadJson TEXT NULL,
+                FOREIGN KEY (DraftSetId) REFERENCES DraftSets (Id) ON DELETE CASCADE
+            );
+            """;
+
+        await auditCommand.ExecuteNonQueryAsync(cancellationToken);
+
+        await using var auditIndexCommand = connection.CreateCommand();
+        auditIndexCommand.CommandText =
+            """
+            CREATE INDEX IF NOT EXISTS IX_DraftAuditEvents_DraftSetId_EventAtUtc
+            ON DraftAuditEvents (DraftSetId, EventAtUtc);
+            """;
+
+        await auditIndexCommand.ExecuteNonQueryAsync(cancellationToken);
+
+        await SqliteMigrationHelpers.EnsureColumnAsync(connection, "DraftSets", "SelectedVariantId", "INTEGER NULL", cancellationToken);
+        await SqliteMigrationHelpers.EnsureColumnAsync(connection, "DraftSets", "ReviewedAtUtc", "TEXT NULL", cancellationToken);
+        await SqliteMigrationHelpers.EnsureColumnAsync(connection, "DraftSets", "PushedToOutlookAtUtc", "TEXT NULL", cancellationToken);
+        await SqliteMigrationHelpers.EnsureColumnAsync(connection, "DraftSets", "SourceReceivedAtUtc", "TEXT NULL", cancellationToken);
+        await SqliteMigrationHelpers.EnsureColumnAsync(connection, "DraftSets", "AnalysisJson", "TEXT NULL", cancellationToken);
+        await SqliteMigrationHelpers.EnsureColumnAsync(connection, "DraftSets", "OriginalEmailBody", "TEXT NULL", cancellationToken);
+        await SqliteMigrationHelpers.EnsureColumnAsync(connection, "DraftSets", "AggregateConfidenceScore", "REAL NULL", cancellationToken);
+        await SqliteMigrationHelpers.EnsureColumnAsync(connection, "DraftSets", "ConfidenceTier", "TEXT NULL", cancellationToken);
+        await SqliteMigrationHelpers.EnsureColumnAsync(connection, "DraftSets", "DismissReason", "TEXT NULL", cancellationToken);
+        await SqliteMigrationHelpers.EnsureColumnAsync(connection, "DraftSets", "DismissedAtUtc", "TEXT NULL", cancellationToken);
+        await SqliteMigrationHelpers.EnsureColumnAsync(connection, "DraftSets", "AssignedToUserId", "TEXT NULL", cancellationToken);
+        await SqliteMigrationHelpers.EnsureColumnAsync(connection, "DraftSets", "OwnerUserId", "TEXT NULL", cancellationToken);
+        await SqliteMigrationHelpers.EnsureColumnAsync(connection, "DraftVariants", "GroundingWarning", "TEXT NULL", cancellationToken);
+        await SqliteMigrationHelpers.EnsureColumnAsync(connection, "DraftVariants", "CoverageWarning", "TEXT NULL", cancellationToken);
+        await SqliteMigrationHelpers.EnsureColumnAsync(connection, "DraftVariants", "EditDistance", "INTEGER NULL", cancellationToken);
+        await SqliteMigrationHelpers.EnsureColumnAsync(connection, "DraftVariants", "EditedAtUtc", "TEXT NULL", cancellationToken);
 
         await using (var renameStatusCommand = connection.CreateCommand())
         {
@@ -193,6 +228,35 @@ public sealed class SqliteDraftStore : IDraftStore
                 """;
 
             await backfillSourceReceivedCommand.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        await using (var backfillAggregateConfidenceCommand = connection.CreateCommand())
+        {
+            backfillAggregateConfidenceCommand.CommandText =
+                """
+                UPDATE DraftSets
+                SET AggregateConfidenceScore = (
+                        SELECT AVG(ConfidenceScore)
+                        FROM DraftVariants
+                        WHERE DraftVariants.DraftSetId = DraftSets.Id
+                    ),
+                    ConfidenceTier = (
+                        SELECT CASE
+                            WHEN AVG(ConfidenceScore) >= 0.75 THEN 'High'
+                            WHEN AVG(ConfidenceScore) >= 0.55 THEN 'Medium'
+                            ELSE 'Low'
+                        END
+                        FROM DraftVariants
+                        WHERE DraftVariants.DraftSetId = DraftSets.Id
+                    )
+                WHERE AggregateConfidenceScore IS NULL
+                  AND EXISTS (
+                        SELECT 1 FROM DraftVariants
+                        WHERE DraftVariants.DraftSetId = DraftSets.Id
+                  );
+                """;
+
+            await backfillAggregateConfidenceCommand.ExecuteNonQueryAsync(cancellationToken);
         }
 
         await MigrateLegacyDraftRepliesAsync(connection, cancellationToken);
@@ -247,7 +311,11 @@ public sealed class SqliteDraftStore : IDraftStore
                 IsAmbiguous,
                 Status,
                 AnalysisJson,
-                OriginalEmailBody
+                OriginalEmailBody,
+                AggregateConfidenceScore,
+                ConfidenceTier,
+                AssignedToUserId,
+                OwnerUserId
             )
             VALUES (
                 $sourceImapUid,
@@ -261,7 +329,11 @@ public sealed class SqliteDraftStore : IDraftStore
                 $isAmbiguous,
                 $status,
                 $analysisJson,
-                $originalEmailBody
+                $originalEmailBody,
+                $aggregateConfidenceScore,
+                $confidenceTier,
+                $assignedToUserId,
+                $ownerUserId
             );
 
             SELECT last_insert_rowid();
@@ -279,6 +351,10 @@ public sealed class SqliteDraftStore : IDraftStore
         command.Parameters.AddWithValue("$status", draftSet.Status);
         command.Parameters.AddWithValue("$analysisJson", (object?)draftSet.AnalysisJson ?? DBNull.Value);
         command.Parameters.AddWithValue("$originalEmailBody", (object?)draftSet.OriginalEmailBody ?? DBNull.Value);
+        command.Parameters.AddWithValue("$aggregateConfidenceScore", (object?)draftSet.AggregateConfidenceScore ?? DBNull.Value);
+        command.Parameters.AddWithValue("$confidenceTier", draftSet.ConfidenceTier.HasValue ? draftSet.ConfidenceTier.Value.ToString() : (object)DBNull.Value);
+        command.Parameters.AddWithValue("$assignedToUserId", (object?)draftSet.AssignedToUserId ?? DBNull.Value);
+        command.Parameters.AddWithValue("$ownerUserId", (object?)draftSet.OwnerUserId ?? DBNull.Value);
 
         var insertedId = Convert.ToInt64(await command.ExecuteScalarAsync(cancellationToken));
 
@@ -297,6 +373,7 @@ public sealed class SqliteDraftStore : IDraftStore
                     ConfidenceScore,
                     StyleSegmentUsed,
                     GroundingWarning,
+                    CoverageWarning,
                     WasSelected,
                     WasEdited,
                     EditedBody
@@ -310,6 +387,7 @@ public sealed class SqliteDraftStore : IDraftStore
                     $confidenceScore,
                     $styleSegmentUsed,
                     $groundingWarning,
+                    $coverageWarning,
                     $wasSelected,
                     $wasEdited,
                     $editedBody
@@ -324,6 +402,7 @@ public sealed class SqliteDraftStore : IDraftStore
             variantCommand.Parameters.AddWithValue("$confidenceScore", variant.ConfidenceScore);
             variantCommand.Parameters.AddWithValue("$styleSegmentUsed", variant.StyleSegmentUsed);
             variantCommand.Parameters.AddWithValue("$groundingWarning", (object?)variant.GroundingWarning ?? DBNull.Value);
+            variantCommand.Parameters.AddWithValue("$coverageWarning", (object?)variant.CoverageWarning ?? DBNull.Value);
             variantCommand.Parameters.AddWithValue("$wasSelected", variant.WasSelected ? 1 : 0);
             variantCommand.Parameters.AddWithValue("$wasEdited", variant.WasEdited ? 1 : 0);
             variantCommand.Parameters.AddWithValue("$editedBody", (object?)variant.EditedBody ?? DBNull.Value);
@@ -442,11 +521,13 @@ public sealed class SqliteDraftStore : IDraftStore
                 ds.Status,
                 COUNT(dv.Id) AS VariantCount,
                 COALESCE(MAX(dv.ConfidenceScore), 0),
-                json_extract(ds.AnalysisJson, '$.urgency') AS Urgency
+                json_extract(ds.AnalysisJson, '$.urgency') AS Urgency,
+                ds.AggregateConfidenceScore,
+                ds.ConfidenceTier
             FROM DraftSets ds
             LEFT JOIN DraftVariants dv ON dv.DraftSetId = ds.Id
             WHERE ($status IS NULL OR ds.Status = $status)
-            GROUP BY ds.Id, ds.FromAddress, ds.Subject, ds.SourceReceivedAtUtc, ds.CreatedAtUtc, ds.Status, ds.AnalysisJson
+            GROUP BY ds.Id, ds.FromAddress, ds.Subject, ds.SourceReceivedAtUtc, ds.CreatedAtUtc, ds.Status, ds.AnalysisJson, ds.AggregateConfidenceScore, ds.ConfidenceTier
             ORDER BY ds.SourceReceivedAtUtc DESC, ds.CreatedAtUtc DESC
             LIMIT $take OFFSET $skip;
             """;
@@ -459,6 +540,13 @@ public sealed class SqliteDraftStore : IDraftStore
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         while (await reader.ReadAsync(cancellationToken))
         {
+            double? aggregate = reader.IsDBNull(9) ? null : reader.GetDouble(9);
+            ConfidenceTier? tier = reader.IsDBNull(10)
+                ? null
+                : Enum.TryParse<ConfidenceTier>(reader.GetString(10), ignoreCase: true, out var parsed)
+                    ? parsed
+                    : null;
+
             results.Add(new DraftSetSummary(
                 reader.GetInt64(0),
                 reader.GetString(1),
@@ -468,7 +556,9 @@ public sealed class SqliteDraftStore : IDraftStore
                 reader.GetString(5),
                 reader.GetInt32(6),
                 reader.GetDouble(7),
-                reader.IsDBNull(8) ? null : reader.GetString(8)));
+                reader.IsDBNull(8) ? null : reader.GetString(8),
+                aggregate,
+                tier));
         }
 
         return results;
@@ -482,7 +572,7 @@ public sealed class SqliteDraftStore : IDraftStore
         await using var setCommand = connection.CreateCommand();
         setCommand.CommandText =
             """
-            SELECT Id, FromAddress, Subject, SourceReceivedAtUtc, CreatedAtUtc, Status, SourceMessageId, SelectedVariantId, AnalysisJson
+            SELECT Id, FromAddress, Subject, SourceReceivedAtUtc, CreatedAtUtc, Status, SourceMessageId, SelectedVariantId, AnalysisJson, AggregateConfidenceScore, ConfidenceTier
             FROM DraftSets
             WHERE Id = $id;
             """;
@@ -505,11 +595,18 @@ public sealed class SqliteDraftStore : IDraftStore
         var analysis = setReader.IsDBNull(8)
             ? null
             : JsonSerializer.Deserialize<EmailRequestAnalysis>(setReader.GetString(8), StoreJsonOptions);
+        double? aggregateConfidence = setReader.IsDBNull(9) ? null : setReader.GetDouble(9);
+        ConfidenceTier? confidenceTier = setReader.IsDBNull(10)
+            ? null
+            : Enum.TryParse<ConfidenceTier>(setReader.GetString(10), ignoreCase: true, out var parsedTier)
+                ? parsedTier
+                : null;
 
         await using var variantsCommand = connection.CreateCommand();
         variantsCommand.CommandText =
             """
-            SELECT Id, Intent, IntentLabel, ConfidenceScore, Body, GroundingWarning
+            SELECT Id, Intent, IntentLabel, ConfidenceScore, Body, GroundingWarning, CoverageWarning,
+                   WasSelected, WasEdited, EditedBody, EditDistance, EditedAtUtc
             FROM DraftVariants
             WHERE DraftSetId = $draftSetId
             ORDER BY SortOrder ASC;
@@ -526,7 +623,13 @@ public sealed class SqliteDraftStore : IDraftStore
                 variantsReader.GetString(2),
                 variantsReader.GetDouble(3),
                 variantsReader.GetString(4),
-                variantsReader.IsDBNull(5) ? null : variantsReader.GetString(5)));
+                variantsReader.IsDBNull(5) ? null : variantsReader.GetString(5),
+                CoverageWarning: variantsReader.IsDBNull(6) ? null : variantsReader.GetString(6),
+                WasSelected: variantsReader.GetInt64(7) != 0,
+                WasEdited: variantsReader.GetInt64(8) != 0,
+                EditedBody: variantsReader.IsDBNull(9) ? null : variantsReader.GetString(9),
+                EditDistance: variantsReader.IsDBNull(10) ? null : (int)variantsReader.GetInt64(10),
+                EditedAtUtc: variantsReader.IsDBNull(11) ? null : DateTimeOffset.Parse(variantsReader.GetString(11))));
         }
 
         return new DraftSetDetail(
@@ -539,7 +642,9 @@ public sealed class SqliteDraftStore : IDraftStore
             sourceMessageId,
             selectedVariantId,
             analysis,
-            variants);
+            variants,
+            aggregateConfidence,
+            confidenceTier);
     }
 
     public async Task<string?> GetOriginalEmailBodyAsync(long id, CancellationToken cancellationToken)
@@ -655,12 +760,33 @@ public sealed class SqliteDraftStore : IDraftStore
         bool clearPushedAt,
         CancellationToken cancellationToken)
     {
-        var setClauses = new List<string> { "Status = $status" };
-
         await using var connection = new SqliteConnection(_connectionString);
         await connection.OpenAsync(cancellationToken);
+        await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+        var sqliteTransaction = (SqliteTransaction)transaction;
+
+        await using var currentStatusCommand = connection.CreateCommand();
+        currentStatusCommand.Transaction = sqliteTransaction;
+        currentStatusCommand.CommandText = "SELECT Status FROM DraftSets WHERE Id = $id;";
+        currentStatusCommand.Parameters.AddWithValue("$id", id);
+        var currentStatusObj = await currentStatusCommand.ExecuteScalarAsync(cancellationToken);
+
+        if (currentStatusObj is null || currentStatusObj is DBNull)
+        {
+            throw new InvalidOperationException($"Draft set {id} does not exist.");
+        }
+
+        var currentStatus = (string)currentStatusObj;
+        if (!DraftSetStatusTransitions.IsAllowed(currentStatus, status))
+        {
+            throw new InvalidOperationException(
+                $"Status transition from '{currentStatus}' to '{status}' is not allowed for draft set {id}.");
+        }
+
+        var setClauses = new List<string> { "Status = $status" };
 
         await using var command = connection.CreateCommand();
+        command.Transaction = sqliteTransaction;
         command.Parameters.AddWithValue("$id", id);
         command.Parameters.AddWithValue("$status", status);
 
@@ -702,6 +828,149 @@ public sealed class SqliteDraftStore : IDraftStore
             """;
 
         await command.ExecuteNonQueryAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
+    }
+
+    public async Task RecordVariantEditAsync(
+        long variantId,
+        string editedBody,
+        int editDistance,
+        DateTimeOffset editedAtUtc,
+        CancellationToken cancellationToken)
+    {
+        await using var connection = new SqliteConnection(_connectionString);
+        await connection.OpenAsync(cancellationToken);
+
+        await using var command = connection.CreateCommand();
+        command.CommandText =
+            """
+            UPDATE DraftVariants
+            SET WasEdited = 1,
+                EditedBody = $editedBody,
+                EditDistance = $editDistance,
+                EditedAtUtc = $editedAtUtc
+            WHERE Id = $id;
+            """;
+        command.Parameters.AddWithValue("$id", variantId);
+        command.Parameters.AddWithValue("$editedBody", editedBody);
+        command.Parameters.AddWithValue("$editDistance", editDistance);
+        command.Parameters.AddWithValue("$editedAtUtc", editedAtUtc.UtcDateTime.ToString("O"));
+
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    public async Task RecordVariantSelectionAsync(
+        long variantId,
+        CancellationToken cancellationToken)
+    {
+        await using var connection = new SqliteConnection(_connectionString);
+        await connection.OpenAsync(cancellationToken);
+
+        await using var command = connection.CreateCommand();
+        command.CommandText =
+            """
+            UPDATE DraftVariants
+            SET WasSelected = 1
+            WHERE Id = $id;
+            """;
+        command.Parameters.AddWithValue("$id", variantId);
+
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    public async Task RecordDismissalAsync(
+        long id,
+        string? reason,
+        DateTimeOffset dismissedAtUtc,
+        CancellationToken cancellationToken)
+    {
+        await using var connection = new SqliteConnection(_connectionString);
+        await connection.OpenAsync(cancellationToken);
+
+        await using var command = connection.CreateCommand();
+        command.CommandText =
+            """
+            UPDATE DraftSets
+            SET DismissReason = $reason,
+                DismissedAtUtc = $dismissedAtUtc
+            WHERE Id = $id;
+            """;
+        command.Parameters.AddWithValue("$id", id);
+        command.Parameters.AddWithValue("$reason", string.IsNullOrWhiteSpace(reason) ? DBNull.Value : (object)reason!.Trim());
+        command.Parameters.AddWithValue("$dismissedAtUtc", dismissedAtUtc.UtcDateTime.ToString("O"));
+
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    public async Task RecordAuditEventAsync(
+        long draftSetId,
+        string eventType,
+        DateTimeOffset eventAtUtc,
+        string? actorUserId,
+        string? payloadJson,
+        CancellationToken cancellationToken)
+    {
+        await using var connection = new SqliteConnection(_connectionString);
+        await connection.OpenAsync(cancellationToken);
+
+        await using var command = connection.CreateCommand();
+        command.CommandText =
+            """
+            INSERT INTO DraftAuditEvents (
+                DraftSetId,
+                EventType,
+                EventAtUtc,
+                ActorUserId,
+                PayloadJson
+            )
+            VALUES (
+                $draftSetId,
+                $eventType,
+                $eventAtUtc,
+                $actorUserId,
+                $payloadJson
+            );
+            """;
+        command.Parameters.AddWithValue("$draftSetId", draftSetId);
+        command.Parameters.AddWithValue("$eventType", eventType);
+        command.Parameters.AddWithValue("$eventAtUtc", eventAtUtc.UtcDateTime.ToString("O"));
+        command.Parameters.AddWithValue("$actorUserId", string.IsNullOrWhiteSpace(actorUserId) ? DBNull.Value : (object)actorUserId!.Trim());
+        command.Parameters.AddWithValue("$payloadJson", string.IsNullOrWhiteSpace(payloadJson) ? DBNull.Value : (object)payloadJson!);
+
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    public async Task<IReadOnlyList<DraftAuditEventRecord>> GetAuditEventsAsync(
+        long draftSetId,
+        CancellationToken cancellationToken)
+    {
+        await using var connection = new SqliteConnection(_connectionString);
+        await connection.OpenAsync(cancellationToken);
+
+        await using var command = connection.CreateCommand();
+        command.CommandText =
+            """
+            SELECT Id, DraftSetId, EventType, EventAtUtc, ActorUserId, PayloadJson
+            FROM DraftAuditEvents
+            WHERE DraftSetId = $draftSetId
+            ORDER BY EventAtUtc ASC, Id ASC;
+            """;
+        command.Parameters.AddWithValue("$draftSetId", draftSetId);
+
+        var results = new List<DraftAuditEventRecord>();
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            results.Add(new DraftAuditEventRecord(
+                reader.GetInt64(0),
+                reader.GetInt64(1),
+                reader.GetString(2),
+                DateTimeOffset.Parse(reader.GetString(3), null, System.Globalization.DateTimeStyles.RoundtripKind),
+                reader.IsDBNull(4) ? null : reader.GetString(4),
+                reader.IsDBNull(5) ? null : reader.GetString(5)));
+        }
+
+        return results;
     }
 
     private void EnsureDatabaseDirectoryExists()
@@ -720,58 +989,6 @@ public sealed class SqliteDraftStore : IDraftStore
         {
             Directory.CreateDirectory(directory);
         }
-    }
-
-    private static async Task EnsureDraftSetColumnExistsAsync(
-        SqliteConnection connection,
-        string columnName,
-        string columnDefinition,
-        CancellationToken cancellationToken)
-    {
-        await using var existsCommand = connection.CreateCommand();
-        existsCommand.CommandText =
-            """
-            SELECT COUNT(*)
-            FROM pragma_table_info('DraftSets')
-            WHERE name = $columnName;
-            """;
-        existsCommand.Parameters.AddWithValue("$columnName", columnName);
-
-        var exists = Convert.ToInt32(await existsCommand.ExecuteScalarAsync(cancellationToken)) > 0;
-        if (exists)
-        {
-            return;
-        }
-
-        await using var alterCommand = connection.CreateCommand();
-        alterCommand.CommandText = $"ALTER TABLE DraftSets ADD COLUMN {columnName} {columnDefinition};";
-        await alterCommand.ExecuteNonQueryAsync(cancellationToken);
-    }
-
-    private static async Task EnsureDraftVariantColumnExistsAsync(
-        SqliteConnection connection,
-        string columnName,
-        string columnDefinition,
-        CancellationToken cancellationToken)
-    {
-        await using var existsCommand = connection.CreateCommand();
-        existsCommand.CommandText =
-            """
-            SELECT COUNT(*)
-            FROM pragma_table_info('DraftVariants')
-            WHERE name = $columnName;
-            """;
-        existsCommand.Parameters.AddWithValue("$columnName", columnName);
-
-        var exists = Convert.ToInt32(await existsCommand.ExecuteScalarAsync(cancellationToken)) > 0;
-        if (exists)
-        {
-            return;
-        }
-
-        await using var alterCommand = connection.CreateCommand();
-        alterCommand.CommandText = $"ALTER TABLE DraftVariants ADD COLUMN {columnName} {columnDefinition};";
-        await alterCommand.ExecuteNonQueryAsync(cancellationToken);
     }
 
     private static async Task MigrateLegacyDraftRepliesAsync(SqliteConnection connection, CancellationToken cancellationToken)
@@ -832,6 +1049,7 @@ public sealed class SqliteDraftStore : IDraftStore
                     ConfidenceScore,
                     StyleSegmentUsed,
                     GroundingWarning,
+                    CoverageWarning,
                     WasSelected,
                     WasEdited,
                     EditedBody
@@ -844,6 +1062,7 @@ public sealed class SqliteDraftStore : IDraftStore
                     legacy.DraftText,
                     0.50,
                     'legacy-history',
+                    NULL,
                     NULL,
                     0,
                     0,

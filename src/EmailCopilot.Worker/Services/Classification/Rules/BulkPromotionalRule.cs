@@ -4,6 +4,9 @@ public sealed class BulkPromotionalRule : BuiltInClassificationRule
 {
     public override string RuleName => "BUILT_IN:BULK_MARKER";
     public override string ReasonCode => ClassificationReasonCodes.BulkOrPromotional;
+    public override string Description =>
+        "Newsletter, promotion, or bulk marketing mail with unsubscribe markers.";
+    public override RuleCategory Category => RuleCategory.BulkBroadcast;
 
     public override RuleEvaluation Evaluate(IncomingEmail email)
     {

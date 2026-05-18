@@ -1,3 +1,7 @@
+using System.Text.Json;
+using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.Options;
+
 namespace EmailCopilot.Worker;
 
 public static class ApiEndpoints
@@ -23,7 +27,9 @@ public static class ApiEndpoints
                 draft.Status,
                 draft.VariantCount,
                 draft.TopConfidence,
-                draft.Urgency)));
+                draft.Urgency,
+                draft.AggregateConfidence,
+                draft.Tier?.ToString())));
         });
 
         api.MapGet("/drafts/{id:long}", async (long id, IDraftStore draftStore, CancellationToken cancellationToken) =>
@@ -47,10 +53,18 @@ public static class ApiEndpoints
                     variant.ShapeLabel,
                     variant.ConfidenceScore,
                     variant.Body,
-                    variant.GroundingWarning)).ToArray(),
+                    variant.GroundingWarning,
+                    variant.CoverageWarning,
+                    variant.WasSelected,
+                    variant.WasEdited,
+                    variant.EditedBody,
+                    variant.EditDistance,
+                    variant.EditedAtUtc)).ToArray(),
                 draftSet.SourceMessageId,
                 draftSet.SelectedVariantId,
-                draftSet.Analysis));
+                draftSet.Analysis,
+                draftSet.AggregateConfidence,
+                draftSet.Tier?.ToString()));
         });
 
         api.MapGet("/drafts/{id:long}/originalEmail", async (long id, IDraftStore draftStore, CancellationToken cancellationToken) =>
@@ -59,7 +73,24 @@ public static class ApiEndpoints
             return Results.Ok(new { body });
         });
 
-        api.MapPost("/drafts/{id:long}/approve", async (long id, ApproveDraftRequest? request, IDraftStore draftStore, IOutlookDraftPusher draftPusher, ILoggerFactory loggerFactory, CancellationToken cancellationToken) =>
+        api.MapGet("/drafts/{id:long}/audit", async (long id, IDraftStore draftStore, CancellationToken cancellationToken) =>
+        {
+            var draftSet = await draftStore.GetDraftSetByIdAsync(id, cancellationToken);
+            if (draftSet is null)
+            {
+                return Results.NotFound();
+            }
+
+            var events = await draftStore.GetAuditEventsAsync(id, cancellationToken);
+            return Results.Ok(events.Select(e => new DraftAuditEventDto(
+                e.Id,
+                e.EventType,
+                e.EventAtUtc,
+                e.ActorUserId,
+                e.PayloadJson)));
+        });
+
+        api.MapPost("/drafts/{id:long}/approve", async (long id, ApproveDraftRequest? request, IDraftStore draftStore, IOutlookDraftPusher draftPusher, IOptions<WorkflowOptions> workflowOptions, ILoggerFactory loggerFactory, CancellationToken cancellationToken) =>
         {
             if (request is null || request.VariantId <= 0)
             {
@@ -67,6 +98,14 @@ public static class ApiEndpoints
             }
 
             var logger = loggerFactory.CreateLogger("DraftApprovalEndpoint");
+            var workflowMode = WorkflowModes.Normalize(workflowOptions.Value.Mode);
+            if (string.Equals(workflowMode, WorkflowModes.SuggestOnly, StringComparison.Ordinal))
+            {
+                logger.LogWarning(
+                    "Workflow mode is SuggestOnly; approve accepted for draft {DraftSetId} but not recommended.",
+                    id);
+            }
+
             var draftSet = await draftStore.GetDraftSetByIdAsync(id, cancellationToken);
             if (draftSet is null)
             {
@@ -78,12 +117,27 @@ public static class ApiEndpoints
                 return Results.Conflict(new { error = "Draft set is not pending." });
             }
 
-            if (draftSet.Variants.All(variant => variant.Id != request.VariantId))
+            var selectedVariant = draftSet.Variants.FirstOrDefault(variant => variant.Id == request.VariantId);
+            if (selectedVariant is null)
             {
                 return Results.BadRequest(new { error = "variantId does not belong to this draft set." });
             }
 
             var reviewedAt = DateTimeOffset.UtcNow;
+
+            await draftStore.RecordVariantSelectionAsync(request.VariantId, cancellationToken);
+
+            if (!string.IsNullOrEmpty(request.EditedBody) && request.EditedBody != selectedVariant.Body)
+            {
+                var distance = EditDistance.Levenshtein(selectedVariant.Body, request.EditedBody);
+                await draftStore.RecordVariantEditAsync(
+                    request.VariantId,
+                    request.EditedBody,
+                    distance,
+                    reviewedAt,
+                    cancellationToken);
+            }
+
             await draftStore.UpdateDraftSetStatusAsync(
                 id,
                 DraftSetStatuses.Approved,
@@ -93,6 +147,15 @@ public static class ApiEndpoints
                 false,
                 false,
                 false,
+                cancellationToken);
+
+            var approvalPayload = JsonSerializer.Serialize(new { variantId = request.VariantId });
+            await draftStore.RecordAuditEventAsync(
+                id,
+                DraftAuditEventTypes.Approved,
+                reviewedAt,
+                null,
+                approvalPayload,
                 cancellationToken);
 
             try
@@ -107,21 +170,30 @@ public static class ApiEndpoints
                     statusCode: StatusCodes.Status502BadGateway);
             }
 
+            var pushedAt = DateTimeOffset.UtcNow;
             await draftStore.UpdateDraftSetStatusAsync(
                 id,
                 DraftSetStatuses.PushedToOutlook,
                 request.VariantId,
                 reviewedAt,
-                DateTimeOffset.UtcNow,
+                pushedAt,
                 false,
                 false,
                 false,
                 cancellationToken);
 
+            await draftStore.RecordAuditEventAsync(
+                id,
+                DraftAuditEventTypes.Pushed,
+                pushedAt,
+                null,
+                approvalPayload,
+                cancellationToken);
+
             return Results.NoContent();
         });
 
-        api.MapPost("/drafts/{id:long}/dismiss", async (long id, IDraftStore draftStore, CancellationToken cancellationToken) =>
+        api.MapPost("/drafts/{id:long}/dismiss", async (long id, DismissDraftRequest? request, IDraftStore draftStore, CancellationToken cancellationToken) =>
         {
             var draftSet = await draftStore.GetDraftSetByIdAsync(id, cancellationToken);
             if (draftSet is null)
@@ -134,15 +206,30 @@ public static class ApiEndpoints
                 return Results.Conflict(new { error = "Draft set is not pending." });
             }
 
+            var dismissedAt = DateTimeOffset.UtcNow;
+
             await draftStore.UpdateDraftSetStatusAsync(
                 id,
                 DraftSetStatuses.Dismissed,
                 null,
-                DateTimeOffset.UtcNow,
+                dismissedAt,
                 null,
                 true,
                 false,
                 false,
+                cancellationToken);
+
+            await draftStore.RecordDismissalAsync(id, request?.Reason, dismissedAt, cancellationToken);
+
+            var dismissPayload = string.IsNullOrWhiteSpace(request?.Reason)
+                ? null
+                : JsonSerializer.Serialize(new { reason = request!.Reason });
+            await draftStore.RecordAuditEventAsync(
+                id,
+                DraftAuditEventTypes.Dismissed,
+                dismissedAt,
+                null,
+                dismissPayload,
                 cancellationToken);
 
             return Results.NoContent();
@@ -181,5 +268,69 @@ public static class ApiEndpoints
                 run.DraftId,
                 new Dictionary<string, int>(run.SkipsByReasonCode, StringComparer.OrdinalIgnoreCase))));
         });
+
+        api.MapGet("/policies/rules", async ([FromServices] BuiltInExclusionClassifier classifier, [FromServices] IRuleToggleStore toggleStore, CancellationToken cancellationToken) =>
+        {
+            var snapshot = await toggleStore.LoadSnapshotAsync(cancellationToken);
+            var dtos = classifier.Rules
+                .Select(rule => new PolicyRuleDto(
+                    rule.RuleName,
+                    HumanizeRuleName(rule.RuleName),
+                    rule.Description,
+                    rule.Category.ToString(),
+                    DefaultEnabled: true,
+                    IsUserConfigurable: IsUserConfigurable(rule.Category),
+                    CurrentlyEnabled: snapshot.TryGetValue(rule.RuleName, out var enabled) ? enabled : true))
+                .ToArray();
+            return Results.Ok(dtos);
+        });
+
+        api.MapGet("/config/workflow", ([FromServices] IOptions<WorkflowOptions> workflowOptions) =>
+        {
+            var mode = WorkflowModes.Normalize(workflowOptions.Value.Mode);
+            return Results.Ok(new WorkflowConfigDto(mode));
+        });
+
+        api.MapPost("/policies/rules/{ruleId}", async (string ruleId, SetPolicyRuleRequest? request, [FromServices] BuiltInExclusionClassifier classifier, [FromServices] IRuleToggleStore toggleStore, CancellationToken cancellationToken) =>
+        {
+            if (request is null)
+            {
+                return Results.BadRequest(new { error = "Request body is required." });
+            }
+
+            var rule = classifier.Rules.FirstOrDefault(r => string.Equals(r.RuleName, ruleId, StringComparison.Ordinal));
+            if (rule is null)
+            {
+                return Results.NotFound(new { error = $"Unknown rule '{ruleId}'." });
+            }
+
+            if (!IsUserConfigurable(rule.Category))
+            {
+                return Results.Json(
+                    new { error = "This rule is not user-configurable.", category = rule.Category.ToString() },
+                    statusCode: StatusCodes.Status403Forbidden);
+            }
+
+            await toggleStore.SetAsync(ruleId, request.Enabled, cancellationToken);
+            return Results.NoContent();
+        });
+    }
+
+    private static bool IsUserConfigurable(RuleCategory category) =>
+        category != RuleCategory.Suspicious && category != RuleCategory.AutomatedSender;
+
+    private static string HumanizeRuleName(string ruleName)
+    {
+        var separatorIndex = ruleName.IndexOf(':');
+        var suffix = separatorIndex >= 0 ? ruleName[(separatorIndex + 1)..] : ruleName;
+        var words = suffix
+            .Split('_', StringSplitOptions.RemoveEmptyEntries)
+            .Select(word => word.Length switch
+            {
+                0 => string.Empty,
+                1 => word.ToUpperInvariant(),
+                _ => char.ToUpperInvariant(word[0]) + word[1..].ToLowerInvariant()
+            });
+        return string.Join(' ', words);
     }
 }

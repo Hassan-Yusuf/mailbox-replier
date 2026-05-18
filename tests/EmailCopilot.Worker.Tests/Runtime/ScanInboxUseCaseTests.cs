@@ -448,10 +448,19 @@ public sealed class ScanInboxUseCaseTests
             styleExampleStore ?? new FakeStyleExampleStore(),
             draftGenerator,
             draftGroundingChecker,
+            new NoopCoverageVerifier(),
             draftStore,
             Options.Create(new WorkerOptions { MaxDraftsPerRun = maxDraftsPerRun }),
             Options.Create(new ImapOptions()),
+            Options.Create(new LlmOptions { UseMock = true }),
+            Options.Create(new EmbeddingOptions { Enabled = false }),
             NullLogger<ScanInboxUseCase>.Instance);
+
+    private sealed class NoopCoverageVerifier : ICoverageVerifier
+    {
+        public Task<string?> VerifyAsync(string draftBody, string replyShape, EmailRequestAnalysis analysis, CancellationToken cancellationToken)
+            => Task.FromResult<string?>(null);
+    }
 
     private static ClassificationResult SkipResult(string reasonCode) =>
         new(
@@ -546,6 +555,7 @@ public sealed class ScanInboxUseCaseTests
                     0.7,
                     0.2,
                     0.3,
+                    0.02,
                     0.1,
                     0.5,
                     0.05,
@@ -693,5 +703,20 @@ public sealed class ScanInboxUseCaseTests
 
         public Task UpdateDraftSetStatusAsync(long id, string status, long? selectedVariantId, DateTimeOffset? reviewedAt, DateTimeOffset? pushedAt, bool clearSelectedVariantId, bool clearReviewedAt, bool clearPushedAt, CancellationToken cancellationToken) =>
             Task.CompletedTask;
+
+        public Task RecordVariantEditAsync(long variantId, string editedBody, int editDistance, DateTimeOffset editedAtUtc, CancellationToken cancellationToken) =>
+            Task.CompletedTask;
+
+        public Task RecordVariantSelectionAsync(long variantId, CancellationToken cancellationToken) =>
+            Task.CompletedTask;
+
+        public Task RecordDismissalAsync(long id, string? reason, DateTimeOffset dismissedAtUtc, CancellationToken cancellationToken) =>
+            Task.CompletedTask;
+
+        public Task RecordAuditEventAsync(long draftSetId, string eventType, DateTimeOffset eventAtUtc, string? actorUserId, string? payloadJson, CancellationToken cancellationToken) =>
+            Task.CompletedTask;
+
+        public Task<IReadOnlyList<DraftAuditEventRecord>> GetAuditEventsAsync(long draftSetId, CancellationToken cancellationToken) =>
+            Task.FromResult<IReadOnlyList<DraftAuditEventRecord>>([]);
     }
 }

@@ -4,6 +4,9 @@ public sealed class CustomerFeedbackSurveyRule : BuiltInClassificationRule
 {
     public override string RuleName => "BUILT_IN:CUSTOMER_FEEDBACK_SURVEY";
     public override string ReasonCode => ClassificationReasonCodes.FeedbackSurveyRequest;
+    public override string Description =>
+        "Request to rate, review, or complete a customer satisfaction survey.";
+    public override RuleCategory Category => RuleCategory.Survey;
 
     public override RuleEvaluation Evaluate(IncomingEmail email)
     {

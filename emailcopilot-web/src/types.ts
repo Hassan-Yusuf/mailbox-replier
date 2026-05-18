@@ -5,6 +5,12 @@ export type DraftVariant = {
   confidenceScore: number;
   body: string;
   groundingWarning?: string | null;
+  coverageWarning?: string | null;
+  wasSelected?: boolean;
+  wasEdited?: boolean;
+  editedBody?: string | null;
+  editDistance?: number | null;
+  editedAtUtc?: string | null;
 };
 
 export type EmailAsk = {
@@ -25,6 +31,8 @@ export type EmailAnalysis = {
   urgency: string;
 };
 
+export type ConfidenceTier = "Low" | "Medium" | "High";
+
 export type DraftSummary = {
   id: number;
   fromAddress: string;
@@ -35,6 +43,8 @@ export type DraftSummary = {
   variantCount: number;
   topConfidence: number;
   urgency: string | null;
+  aggregateConfidence?: number | null;
+  tier?: ConfidenceTier | null;
 };
 
 export type DraftDetail = {
@@ -48,6 +58,8 @@ export type DraftDetail = {
   sourceMessageId: string;
   selectedVariantId?: number | null;
   analysis?: EmailAnalysis | null;
+  aggregateConfidence?: number | null;
+  tier?: ConfidenceTier | null;
 };
 
 export type SkippedEmail = {
@@ -66,4 +78,20 @@ export type RunRecord = {
   draftCreated: boolean;
   draftId?: number | null;
   skipBuckets: Record<string, number>;
+};
+
+export type WorkflowMode = "ReviewBeforeSend" | "SuggestOnly";
+
+export type WorkflowConfig = {
+  mode: WorkflowMode;
+};
+
+export type PolicyRule = {
+  ruleId: string;
+  displayName: string;
+  description: string;
+  category: string;
+  defaultEnabled: boolean;
+  isUserConfigurable: boolean;
+  currentlyEnabled: boolean;
 };

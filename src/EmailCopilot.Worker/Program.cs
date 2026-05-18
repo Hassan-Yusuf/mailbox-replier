@@ -1,6 +1,21 @@
 using EmailCopilot.Worker;
+using EmailCopilot.Worker.Diagnostics;
 using Microsoft.Data.Sqlite;
+using Microsoft.Extensions.Options;
 using System.Text.Json;
+
+if (args.Contains("--diagnose-avoid-filter"))
+{
+    var diagnoseConfig = new ConfigurationBuilder()
+        .SetBasePath(ResolveContentRoot())
+        .AddJsonFile("appsettings.json", optional: false)
+        .AddJsonFile("appsettings.Development.json", optional: true)
+        .AddUserSecrets<Program>(optional: true)
+        .Build();
+    var apiKey = diagnoseConfig["Embedding:ApiKey"] ?? diagnoseConfig["Llm:ApiKey"] ?? string.Empty;
+    var model = diagnoseConfig["Embedding:Model"] ?? "text-embedding-3-small";
+    return await TestAvoidFilter.RunAsync(apiKey, model);
+}
 
 var builder = WebApplication.CreateBuilder(new WebApplicationOptions
 {
@@ -22,9 +37,11 @@ builder.Services.PostConfigure<DatabaseOptions>(options =>
         builder.Environment.ContentRootPath);
 });
 builder.Services.Configure<LlmOptions>(builder.Configuration.GetSection("Llm"));
+builder.Services.Configure<EmbeddingOptions>(builder.Configuration.GetSection("Embedding"));
 builder.Services.Configure<MicrosoftOAuthOptions>(builder.Configuration.GetSection("MicrosoftOAuth"));
 builder.Services.Configure<StyleProfileOptions>(builder.Configuration.GetSection("StyleProfile"));
 builder.Services.Configure<ReplyScopeOptions>(builder.Configuration.GetSection("ReplyScope"));
+builder.Services.Configure<WorkflowOptions>(builder.Configuration.GetSection("Workflow"));
 builder.Services.Configure<WebUiOptions>(builder.Configuration.GetSection("WebUi"));
 builder.Services.Configure<WorkerOptions>(builder.Configuration.GetSection("Worker"));
 builder.Services.Configure<ExclusionRulesOptions>(builder.Configuration.GetSection("ExclusionRules"));
@@ -40,6 +57,8 @@ builder.Services.AddSingleton<IOutlookDraftPusher, OutlookDraftPusher>();
 builder.Services.AddSingleton<IIncomingEmailReader>(serviceProvider => serviceProvider.GetRequiredService<ImapEmailReader>());
 builder.Services.AddSingleton<ExclusionRulesValidator>();
 builder.Services.AddSingleton<Phase1ConfigurationValidator>();
+builder.Services.AddSingleton<SqliteRuleToggleStore>();
+builder.Services.AddSingleton<IRuleToggleStore>(serviceProvider => serviceProvider.GetRequiredService<SqliteRuleToggleStore>());
 builder.Services.AddSingleton<BuiltInExclusionClassifier>();
 builder.Services.AddSingleton<ConfiguredExclusionClassifier>();
 builder.Services.AddSingleton<BuiltInExclusionStage>();
@@ -51,6 +70,8 @@ builder.Services.AddSingleton<IDraftEligibilityAssessor, DraftEligibilityAssesso
 builder.Services.AddSingleton<IReplyShapePlanner, ReplyShapePlanner>();
 builder.Services.AddSingleton<GreetingPolicy>();
 builder.Services.AddSingleton<IDraftGroundingChecker, DraftGroundingChecker>();
+builder.Services.AddSingleton<IEmbeddingClient, OpenAIEmbeddingClient>();
+builder.Services.AddSingleton<ICoverageVerifier, CoverageVerifier>();
 builder.Services.AddSingleton<StyleAuthoredBodyPipeline>();
 builder.Services.AddSingleton<StyleSentenceFilterPipeline>();
 builder.Services.AddSingleton<StaticStyleProfileProvider>();
@@ -69,6 +90,18 @@ builder.Services.AddSingleton(_ => new HttpClient
 {
     Timeout = TimeSpan.FromSeconds(45)
 });
+builder.Services.AddSingleton<AvoidPhraseEmbeddings>(serviceProvider =>
+{
+    var options = serviceProvider.GetRequiredService<IOptions<LlmOptions>>().Value;
+    if (!options.AvoidFilter.Enabled)
+    {
+        return new AvoidPhraseEmbeddings(Array.Empty<AvoidPhraseCentroid>());
+    }
+
+    var embeddingClient = serviceProvider.GetRequiredService<IEmbeddingClient>();
+    return AvoidPhraseEmbeddings.BuildAsync(embeddingClient, CancellationToken.None).GetAwaiter().GetResult();
+});
+builder.Services.AddSingleton<AvoidPhraseEmbeddingFilter>();
 builder.Services.AddSingleton<LlmDraftGenerator>();
 builder.Services.AddSingleton<IReplyDraftGenerator>(serviceProvider => serviceProvider.GetRequiredService<LlmDraftGenerator>());
 
@@ -108,6 +141,7 @@ if (webUiEnabled)
 }
 
 await app.RunAsync();
+return 0;
 
 static string ResolveContentRoot()
 {

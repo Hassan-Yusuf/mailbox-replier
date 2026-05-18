@@ -21,17 +21,20 @@ public sealed class LlmDraftGenerator : IReplyDraftGenerator
     private readonly LlmOptions _options;
     private readonly ILogger<LlmDraftGenerator> _logger;
     private readonly GreetingPolicy _greetingPolicy;
+    private readonly AvoidPhraseEmbeddingFilter _avoidFilter;
 
     public LlmDraftGenerator(
         HttpClient httpClient,
         IOptions<LlmOptions> options,
         ILogger<LlmDraftGenerator> logger,
-        GreetingPolicy greetingPolicy)
+        GreetingPolicy greetingPolicy,
+        AvoidPhraseEmbeddingFilter avoidFilter)
     {
         _httpClient = httpClient;
         _options = options.Value;
         _logger = logger;
         _greetingPolicy = greetingPolicy;
+        _avoidFilter = avoidFilter;
     }
 
     public bool UseMock => _options.UseMock;
@@ -76,7 +79,7 @@ public sealed class LlmDraftGenerator : IReplyDraftGenerator
                         new ChatMessage(
                             "system",
                             "You draft email replies. Return only the email reply body. Do not add markdown, code fences, or a subject line."),
-                        new ChatMessage("user", BuildPrompt(email, styleProfile, styleExamples, analysis, analysis.RequiresPersonalConfirmation, promptBody, senderFirstName, replyShape, replyShapeLabel, mustAddressAsks, retryIssues))
+                        new ChatMessage("user", BuildPrompt(email, styleProfile, styleExamples, analysis, analysis.RequiresPersonalConfirmation, promptBody, senderFirstName, replyShape, replyShapeLabel, mustAddressAsks, retryIssues, _options.AvoidPhrasesMode))
                     },
                     0.25,
                     220);
@@ -119,7 +122,25 @@ public sealed class LlmDraftGenerator : IReplyDraftGenerator
 
                 if (draftIssues.Count == 0)
                 {
-                    return cleanedDraft;
+                    var userMarkerWords = (styleProfile.ObservedDiscourseMarkers ?? Array.Empty<DiscourseMarkerObservation>())
+                        .Select(static m => m.Marker)
+                        .ToArray();
+
+                    var filterResult = await _avoidFilter.EvaluateAsync(
+                        cleanedDraft,
+                        replyShape,
+                        userMarkerWords,
+                        cancellationToken);
+
+                    if (filterResult.Status != AvoidFilterStatus.Rejected)
+                    {
+                        return cleanedDraft;
+                    }
+
+                    draftIssues = new List<string>
+                    {
+                        $"embedding filter matched family '{filterResult.MatchedFamilyId}' on sentence \"{filterResult.OffendingSentence}\" (cosine {filterResult.Cosine:F3}). Rewrite that sentence in the user's voice — direct, natural, no template."
+                    };
                 }
 
                 if (attempt < MaxAttempts)
@@ -191,8 +212,9 @@ public sealed class LlmDraftGenerator : IReplyDraftGenerator
         string replyShape,
         string replyShapeLabel,
         IReadOnlyList<string> mustAddressAsks,
-        IReadOnlyList<string> retryIssues) =>
-        BuildPrompt(email, styleProfile, styleExamples, analysis, requiresPersonalConfirmation, promptBody, senderFirstName, replyShape, replyShapeLabel, mustAddressAsks, retryIssues);
+        IReadOnlyList<string> retryIssues,
+        AvoidPhrasesMode avoidPhrasesMode = AvoidPhrasesMode.StaticFallback) =>
+        BuildPrompt(email, styleProfile, styleExamples, analysis, requiresPersonalConfirmation, promptBody, senderFirstName, replyShape, replyShapeLabel, mustAddressAsks, retryIssues, avoidPhrasesMode);
 
     private static string BuildPrompt(
         IncomingEmail email,
@@ -205,16 +227,37 @@ public sealed class LlmDraftGenerator : IReplyDraftGenerator
         string replyShape,
         string replyShapeLabel,
         IReadOnlyList<string> mustAddressAsks,
-        IReadOnlyList<string> retryIssues)
+        IReadOnlyList<string> retryIssues,
+        AvoidPhrasesMode avoidPhrasesMode)
     {
-        var styleGuidance = styleExamples.Count == 0
-            ? "Adaptive style guidance derived from the learned profile:" + Environment.NewLine +
-              BuildAdaptiveStyleGuidance(styleProfile)
-            : BuildExampleGuidance(SelectPromptExamples(email.MessageId, styleExamples));
+        var adaptive = BuildAdaptiveStyleGuidance(styleProfile);
+        var adaptiveBlock = "Adaptive style guidance derived from the learned profile:" + Environment.NewLine + adaptive;
+        var favoredPhrasesSection = BuildFavoredPhrasesSection(replyShape, styleProfile.FavoredPhrases);
+        string styleGuidance;
+        if (styleExamples.Count == 0)
+        {
+            styleGuidance = string.IsNullOrEmpty(favoredPhrasesSection)
+                ? adaptiveBlock
+                : adaptiveBlock + Environment.NewLine + Environment.NewLine + favoredPhrasesSection;
+        }
+        else
+        {
+            var selectedExamples = SelectPromptExamples(email.MessageId, styleExamples);
+            var voiceSignals = BuildVoiceSignals(
+                selectedExamples,
+                styleProfile.ObservedDiscourseMarkers ?? Array.Empty<DiscourseMarkerObservation>());
+            var voiceBlock = string.IsNullOrWhiteSpace(voiceSignals)
+                ? string.Empty
+                : "Concrete voice signals observed in this user's recent replies:" + Environment.NewLine + voiceSignals + Environment.NewLine + Environment.NewLine;
+            styleGuidance = adaptiveBlock + Environment.NewLine + Environment.NewLine +
+                            voiceBlock +
+                            favoredPhrasesSection +
+                            BuildExampleGuidance(selectedExamples);
+        }
         var replyShapeGuidance = BuildIntentGuidance(replyShape, requiresPersonalConfirmation);
         var greetingRule = string.IsNullOrWhiteSpace(senderFirstName)
-            ? "Use \"Hi,\" if you need a greeting. Do not use a person name in the greeting."
-            : $"The sender's first name is \"{senderFirstName}\". If you use a name in the greeting, use only that name. Never guess another name from the body.";
+            ? "Greeting: usually omit it entirely, or use just \"Hi,\" with a comma. Do NOT add a person name."
+            : $"Sender's first name is \"{senderFirstName}\". Strongly prefer just \"Hi,\" with no name - the user almost always omits names in greetings. Only use the name if the email is unambiguously personal AND a name fits naturally. Never invent another name from the body.";
 
         var retrySection = retryIssues.Count == 0
             ? string.Empty
@@ -236,16 +279,39 @@ The previous draft had these problems and must be rewritten without them:
                 Environment.NewLine,
                 analysis.DecisionBranches.Select(branch => $"- {branch.Summary} [{string.Join(", ", branch.ViableReplyShapes)}]"));
 
+        var avoidPhrasesSection = BuildAvoidPhrasesSection(replyShape, styleProfile.AvoidPhrases, avoidPhrasesMode);
+
+        var personalConfirmationDirective = requiresPersonalConfirmation
+            ? """
+
+CRITICAL OUTPUT REQUIREMENT (overrides everything below, including style examples):
+This reply requires facts only the recipient personally knows - their availability, location/property details, experience, qualifications, or willingness to commit.
+You DO NOT know any of these. Every such fact in the reply MUST be a [placeholder] - even when the sender's email seems to name or imply them.
+
+GOOD (scheduling): "Yes, I can do [time] at [location]."
+GOOD (property):   "There [is/are] [number] dehumidifier(s) at [property address]."
+GOOD (experience): "I have [years] of experience in [area]." | "I [have/don't have] experience in this area."
+BAD : "Yes, I can work tomorrow at Ipswich FC from 16:30 to 23:15." (echoes sender's specifics as confirmed fact)
+BAD : "We have one dehumidifier at [property address]." (the count is also unknown - must also be [placeholder])
+BAD : "I have catering experience." (asserts a capability the user has not stated)
+
+This rule wins against any natural "Yes I can..." or "I have..." phrasing in the style examples.
+
+"""
+            : string.Empty;
+
         return
 $"""
-Write a reply to this email in the user's learned reply style.
-
+You are writing this reply AS the user — not as an AI assistant composing something for them to use. Write like they actually write: direct, natural, no templates. Match their tone and voice so closely that the recipient reads it as them, not someone else. Follow the examples below. Write in the user's learned reply style.
+{personalConfirmationDirective}
 Reply intent:
 - Reply shape: {replyShape}
 - Reply shape label: {replyShapeLabel}
 - Reply shape guidance: {replyShapeGuidance}
 
 Follow these rules exactly:
+- Sound like a person quickly replying from their phone - not like a customer-service template or formal correspondence.
+- When the reply-shape TONE conflicts with the style profile or examples below, follow the reply-shape TONE.
 - Get to the point immediately.
 - Prefer a direct question, confirmation, or concrete next step when appropriate.
 - Casual-professional is good. Corporate, polished, or "helpful assistant" sounding is bad.
@@ -257,7 +323,7 @@ Follow these rules exactly:
 - Do not introduce dates, times, numbers, URLs, names, or commitments that are not present in the source email.
 - Availability, experience claims, acceptance or rejection of an offer, and opinions or ratings you cannot know must always use an explicit [placeholder]. Do not infer these from context. Examples: "I can do [time]", "I [have/don't have] experience in this area", "I'm [interested/not interested] in the role".
 - {greetingRule}
-- If you use a greeting, keep it brief: usually just "{styleProfile.Greeting}" or "{styleProfile.Greeting} [first name],".
+- If you use a greeting, keep it brief - just "{styleProfile.Greeting},". Adding a recipient name is rare for this user; omit it unless clearly natural.
 
 Selected style segment: {styleProfile.SegmentKey}
 
@@ -268,7 +334,7 @@ Extracted reply-planning analysis:
 {analysisSection}
 - Stated deadlines: {(analysis.StatedDeadlines.Count == 0 ? "none" : string.Join(", ", analysis.StatedDeadlines))}
 - Urgency: {analysis.Urgency}
-
+{avoidPhrasesSection}
 Sender: {email.From.Address}
 Subject: {email.Subject}
 Message-ID: {email.MessageId}
@@ -339,10 +405,191 @@ Email body:
                string.Join(Environment.NewLine + Environment.NewLine, blocks);
     }
 
+    private static readonly System.Text.RegularExpressions.Regex LowercaseIMidSentenceRegex =
+        new(@"(?<=\S\s)i\b",
+            System.Text.RegularExpressions.RegexOptions.CultureInvariant | System.Text.RegularExpressions.RegexOptions.Compiled);
+
+    private static readonly System.Text.RegularExpressions.Regex VoiceWordRegex =
+        new(@"\b[\p{L}\p{N}']+\b",
+            System.Text.RegularExpressions.RegexOptions.CultureInvariant | System.Text.RegularExpressions.RegexOptions.Compiled);
+
+    private static readonly string[] EmojiWhitelist =
+    [
+        "\U0001F64F", // 🙏
+        "\U0001F44D", // 👍
+        "\U0001F60A", // 😊
+        "\u2764\uFE0F", // ❤️
+        "\u2764", // ❤ (unqualified)
+        "\U0001F64C"  // 🙌
+    ];
+
+    internal static string BuildVoiceSignalsForTesting(IReadOnlyList<StyleExample> examples) =>
+        BuildVoiceSignals(examples, Array.Empty<DiscourseMarkerObservation>());
+
+    internal static string BuildVoiceSignalsForTesting(
+        IReadOnlyList<StyleExample> examples,
+        IReadOnlyList<DiscourseMarkerObservation> observedMarkers) =>
+        BuildVoiceSignals(examples, observedMarkers);
+
+    private static string BuildVoiceSignals(
+        IReadOnlyList<StyleExample> examples,
+        IReadOnlyList<DiscourseMarkerObservation> observedMarkers)
+    {
+        if (examples.Count == 0)
+        {
+            return string.Empty;
+        }
+
+        var bodies = examples
+            .Select(example => example.ExampleBody ?? string.Empty)
+            .Where(body => !string.IsNullOrWhiteSpace(body))
+            .ToArray();
+
+        if (bodies.Length == 0)
+        {
+            return string.Empty;
+        }
+
+        var sampleCount = bodies.Length;
+        var lowercaseIThreshold = sampleCount >= 10 ? 0.35 : 0.50;
+        var emojiThreshold = sampleCount >= 10 ? 0.15 : 0.20;
+        const double trailingQuestionThreshold = 0.40;
+
+        var lowercaseIHits = bodies.Count(body => LowercaseIMidSentenceRegex.IsMatch(body));
+        var trailingQuestionHits = bodies.Count(body => body.TrimEnd().EndsWith("?", StringComparison.Ordinal));
+        var emojiHits = bodies.Count(body => EmojiWhitelist.Any(emoji => body.Contains(emoji, StringComparison.Ordinal)));
+
+        var lowercaseIRate = (double)lowercaseIHits / sampleCount;
+        var trailingQuestionRate = (double)trailingQuestionHits / sampleCount;
+        var emojiRate = (double)emojiHits / sampleCount;
+
+        var wordCounts = bodies
+            .Select(body => VoiceWordRegex.Matches(body).Count)
+            .Where(count => count > 0)
+            .OrderBy(count => count)
+            .ToArray();
+
+        var lines = new List<string>(4);
+
+        if (lowercaseIRate >= lowercaseIThreshold)
+        {
+            lines.Add("- The user writes lowercase \"i\" mid-sentence - keep this when it fits.");
+        }
+
+        if (trailingQuestionRate >= trailingQuestionThreshold)
+        {
+            lines.Add("- The user often ends with a short question.");
+        }
+
+        if (emojiRate >= emojiThreshold)
+        {
+            lines.Add("- A single emoji at the end is occasionally natural (do not force one).");
+        }
+
+        if (wordCounts.Length > 0)
+        {
+            var median = wordCounts[wordCounts.Length / 2];
+            lines.Add($"- Median reply length: {median} words.");
+        }
+
+        if (observedMarkers.Count >= 2)
+        {
+            var markerList = string.Join(
+                ", ",
+                observedMarkers
+                    .OrderByDescending(static m => m.Rate)
+                    .Take(6)
+                    .Select(static m => $"\"{m.Marker}\""));
+            lines.Add($"- The user often uses: {markerList} - fold these in where they fit naturally.");
+        }
+
+        return lines.Count == 0 ? string.Empty : string.Join(Environment.NewLine, lines);
+    }
+
+    private const int MaxAvoidPhrases = 7;
+    private const int MaxFavoredPhrases = 3;
+
+    private static string BuildFavoredPhrasesSection(
+        string replyShape,
+        IReadOnlyDictionary<string, IReadOnlyList<string>>? favored)
+    {
+        if (favored is null || !favored.TryGetValue(replyShape, out var phrases) || phrases.Count == 0)
+        {
+            return string.Empty;
+        }
+
+        var capped = phrases
+            .Where(static p => !string.IsNullOrWhiteSpace(p))
+            .Take(MaxFavoredPhrases)
+            .ToArray();
+
+        if (capped.Length == 0)
+        {
+            return string.Empty;
+        }
+
+        var bulletList = string.Join(
+            Environment.NewLine,
+            capped.Select(static phrase => $"- \"{phrase}\""));
+
+        return "Phrases the user actually writes when replying in this shape - use one only if it fits naturally, do not force:" + Environment.NewLine +
+               bulletList + Environment.NewLine + Environment.NewLine;
+    }
+
+    private static string BuildAvoidPhrasesSection(
+        string replyShape,
+        IReadOnlyDictionary<string, IReadOnlyList<string>>? profileAvoidPhrases,
+        AvoidPhrasesMode mode)
+    {
+        if (mode == AvoidPhrasesMode.Disabled)
+        {
+            return string.Empty;
+        }
+
+        IReadOnlyList<string> phrases = Array.Empty<string>();
+
+        if (profileAvoidPhrases is not null
+            && profileAvoidPhrases.TryGetValue(replyShape, out var learned)
+            && learned.Count > 0)
+        {
+            phrases = learned;
+        }
+        else
+        {
+            phrases = StaticAvoidPhrases.ForShape(replyShape);
+        }
+
+        if (phrases.Count == 0)
+        {
+            return string.Empty;
+        }
+
+        var capped = phrases
+            .Where(static p => !string.IsNullOrWhiteSpace(p))
+            .Take(MaxAvoidPhrases)
+            .ToArray();
+
+        if (capped.Length == 0)
+        {
+            return string.Empty;
+        }
+
+        var bulletList = string.Join(
+            Environment.NewLine,
+            capped.Select(static phrase => $"- \"{phrase}\""));
+
+        return Environment.NewLine +
+               "The user's writing style avoids phrases like:" + Environment.NewLine +
+               bulletList + Environment.NewLine +
+               "Avoid these and equivalent generic constructions. Match the user's voice from the style examples above." +
+               Environment.NewLine;
+    }
+
     private static string BuildIntentGuidance(string replyShape, bool requiresPersonalConfirmation) =>
         replyShape switch
         {
             ReplyShapes.DirectAnswer =>
+                "TONE: answer the actual question directly, no preamble. " +
                 "Answer the sender directly in the first sentence. Add only essential follow-up detail. " +
                 "If the answer depends on information you cannot know (availability, property details, credentials, preferences), " +
                 "write it with an explicit [placeholder] - e.g. \"Yes, I can do [time]\" - never invent or assert a fact as true. " +
@@ -354,16 +601,21 @@ Email body:
                       "Example: \"Yes, I can do [date/time] at [location].\" Never assert as fact."
                     : string.Empty),
             ReplyShapes.Acknowledge =>
+                "TONE: acknowledge receipt only - no questions, no commitments. " +
                 "If the email is informational - an update, notification, or FYI - acknowledge it in one or two sentences. " +
                 "If the email is an offer, invitation, or request for availability, defer: indicate you will check and come back rather than passively noting it. " +
                 "Do not state a stance (interested, not interested, available, unavailable) - use [placeholder] if the shape forces one.",
             ReplyShapes.AcknowledgeAndAsk =>
+                "TONE: acknowledge briefly, then ask the one clarifying question that unblocks the next step. " +
                 "Acknowledge the information, then ask one specific clarifying question if it helps move things forward.",
             ReplyShapes.ConfirmAndClose =>
+                "TONE: confirm understanding, close the loop, no further action requested. " +
                 "Confirm briefly and close the loop without opening unnecessary follow-up. Do not assert availability, attendance, or acceptance without a [placeholder] if those facts are not known.",
             ReplyShapes.ConfirmAndRequest =>
+                "TONE: confirm understanding, then make one specific request. " +
                 "Confirm the update briefly, then request one specific missing detail or next-step clarification.",
             ReplyShapes.Decline =>
+                "TONE: decline politely, no long explanation, no apology spiral. " +
                 "Decline clearly and briefly without over-explaining. " +
                 "If the decline involves your availability or capacity, use a [placeholder] rather than asserting a specific fact " +
                 "e.g. use [tomorrow] or [the proposed time] rather than stating a specific date as fact.",
@@ -392,6 +644,15 @@ Email body:
         else if (styleProfile.QuestionEndingRate < 0.15)
         {
             guidance.Add("- Do not force a question if a direct answer is enough.");
+        }
+
+        if (styleProfile.ExclamationUsageRate < 0.05)
+        {
+            guidance.Add("- The user almost never uses exclamation marks.");
+        }
+        else if (styleProfile.ExclamationUsageRate > 0.30)
+        {
+            guidance.Add("- Exclamation marks can be natural for this user.");
         }
 
         if (styleProfile.GratitudeUsageRate < 0.1)
@@ -540,6 +801,8 @@ $"""
         yield return (@"at your earliest convenience", "passive filler");
         yield return (@"impact your team'?s projects", "template-like project phrasing");
         yield return (@"\blet me know if (you need|there is|I can|there'?s anything)", "filler offer of further help");
+        yield return (@"\bi hope this (helps|is helpful|answers)", "AI closer filler");
+        yield return (@"\bfeel free to (reach out|ask|contact)", "AI offer-of-help filler");
     }
 
     private static int CountWords(string value) =>

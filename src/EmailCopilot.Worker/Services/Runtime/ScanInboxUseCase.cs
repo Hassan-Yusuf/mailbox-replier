@@ -24,10 +24,13 @@ public sealed class ScanInboxUseCase
     private readonly IStyleExampleStore _styleExampleStore;
     private readonly IReplyDraftGenerator _replyDraftGenerator;
     private readonly IDraftGroundingChecker _draftGroundingChecker;
+    private readonly ICoverageVerifier _coverageVerifier;
     private readonly IDraftStore _draftStore;
     private readonly ILogger<ScanInboxUseCase> _logger;
     private readonly WorkerOptions _workerOptions;
     private readonly ImapOptions _imapOptions;
+    private readonly LlmOptions _llmOptions;
+    private readonly EmbeddingOptions _embeddingOptions;
 
     public ScanInboxUseCase(
         IIncomingEmailReader incomingEmailReader,
@@ -40,9 +43,12 @@ public sealed class ScanInboxUseCase
         IStyleExampleStore styleExampleStore,
         IReplyDraftGenerator replyDraftGenerator,
         IDraftGroundingChecker draftGroundingChecker,
+        ICoverageVerifier coverageVerifier,
         IDraftStore draftStore,
         IOptions<WorkerOptions> workerOptions,
         IOptions<ImapOptions> imapOptions,
+        IOptions<LlmOptions> llmOptions,
+        IOptions<EmbeddingOptions> embeddingOptions,
         ILogger<ScanInboxUseCase> logger)
     {
         _incomingEmailReader = incomingEmailReader;
@@ -55,9 +61,12 @@ public sealed class ScanInboxUseCase
         _styleExampleStore = styleExampleStore;
         _replyDraftGenerator = replyDraftGenerator;
         _draftGroundingChecker = draftGroundingChecker;
+        _coverageVerifier = coverageVerifier;
         _draftStore = draftStore;
         _workerOptions = workerOptions.Value;
         _imapOptions = imapOptions.Value;
+        _llmOptions = llmOptions.Value;
+        _embeddingOptions = embeddingOptions.Value;
         _logger = logger;
     }
 
@@ -228,6 +237,10 @@ public sealed class ScanInboxUseCase
                             analysis,
                             option.MustAddressAsks ?? []);
 
+                        var coverageWarning = (!_llmOptions.UseMock && _embeddingOptions.Enabled && analysis is not null)
+                            ? await _coverageVerifier.VerifyAsync(draftText, option.Shape, analysis, cancellationToken)
+                            : null;
+
                         variants.Add(new DraftVariantRecord
                         {
                             SortOrder = variants.Count,
@@ -236,7 +249,8 @@ public sealed class ScanInboxUseCase
                             Body = draftText,
                             ConfidenceScore = option.ConfidenceScore,
                             StyleSegmentUsed = styleProfile.SegmentKey,
-                            GroundingWarning = groundingWarning
+                            GroundingWarning = groundingWarning,
+                            CoverageWarning = coverageWarning
                         });
                     }
 
@@ -269,6 +283,13 @@ public sealed class ScanInboxUseCase
                         strategyId,
                         candidate.ImapUid);
 
+                    var aggregateConfidence = variants.Count > 0
+                        ? variants.Average(variant => variant.ConfidenceScore)
+                        : (double?)null;
+                    var confidenceTier = aggregateConfidence.HasValue
+                        ? ConfidenceTierClassifier.FromScore(aggregateConfidence.Value)
+                        : (ConfidenceTier?)null;
+
                     var draftSet = new DraftSetRecord
                     {
                         SourceImapUid = candidate.ImapUid,
@@ -283,6 +304,8 @@ public sealed class ScanInboxUseCase
                         IsAmbiguous = variants.Count > 1,
                         Status = DraftSetStatuses.Pending,
                         AnalysisJson = JsonSerializer.Serialize(analysis),
+                        AggregateConfidenceScore = aggregateConfidence,
+                        ConfidenceTier = confidenceTier,
                         Variants = variants
                     };
 

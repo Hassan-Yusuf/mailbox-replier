@@ -94,6 +94,7 @@ public sealed class StyleProfileMetricsTests
             0.5,
             0.2,
             0.3,
+            0.02,
             0.2,
             0.4,
             0.1,

@@ -11,6 +11,7 @@ public sealed class RunOnceWorker : BackgroundService
     private readonly IRunRecordStore _runRecordStore;
     private readonly SqliteStyleProfileStore _sqliteStyleProfileStore;
     private readonly IStyleExampleStore _styleExampleStore;
+    private readonly IRuleToggleStore _ruleToggleStore;
     private readonly ScanInboxUseCase _scanInboxUseCase;
     private readonly LlmOptions _llmOptions;
     private readonly WebUiOptions _webUiOptions;
@@ -23,6 +24,7 @@ public sealed class RunOnceWorker : BackgroundService
         IRunRecordStore runRecordStore,
         SqliteStyleProfileStore sqliteStyleProfileStore,
         IStyleExampleStore styleExampleStore,
+        IRuleToggleStore ruleToggleStore,
         ScanInboxUseCase scanInboxUseCase,
         IOptions<LlmOptions> llmOptions,
         IOptions<MicrosoftOAuthOptions> microsoftOAuthOptions,
@@ -36,6 +38,7 @@ public sealed class RunOnceWorker : BackgroundService
         _runRecordStore = runRecordStore;
         _sqliteStyleProfileStore = sqliteStyleProfileStore;
         _styleExampleStore = styleExampleStore;
+        _ruleToggleStore = ruleToggleStore;
         _scanInboxUseCase = scanInboxUseCase;
         _llmOptions = llmOptions.Value;
         _webUiOptions = webUiOptions.Value;
@@ -66,6 +69,9 @@ public sealed class RunOnceWorker : BackgroundService
 
             await _styleExampleStore.InitializeAsync(stoppingToken);
             _logger.LogInformation("SQLite style-example initialization completed successfully.");
+
+            await _ruleToggleStore.InitializeAsync(stoppingToken);
+            _logger.LogInformation("SQLite rule-toggle initialization completed successfully.");
 
             var processedImapUids = await _sqliteDraftStore.GetProcessedSourceImapUidsAsync(stoppingToken);
             _logger.LogInformation(

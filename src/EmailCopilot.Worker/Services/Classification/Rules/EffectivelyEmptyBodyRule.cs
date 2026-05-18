@@ -6,6 +6,9 @@ public sealed class EffectivelyEmptyBodyRule : BuiltInClassificationRule
 {
     public override string RuleName => "BUILT_IN:EFFECTIVELY_EMPTY_BODY";
     public override string ReasonCode => ClassificationReasonCodes.BulkOrPromotional;
+    public override string Description =>
+        "Body is empty or contains only formatting characters after normalization.";
+    public override RuleCategory Category => RuleCategory.LowSignal;
 
     public override RuleEvaluation Evaluate(IncomingEmail email)
     {

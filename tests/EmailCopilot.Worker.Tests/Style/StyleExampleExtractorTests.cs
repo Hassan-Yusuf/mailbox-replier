@@ -112,6 +112,24 @@ public sealed class StyleExampleExtractorTests
         Assert.That(examples.All(static example => example.SegmentKey == "relationship-professional"), Is.True);
     }
 
+    [Test]
+    public async Task ExtractAsync_should_collapse_whitespace_only_duplicates_to_a_single_entry()
+    {
+        var baseBody = "Hi Sam,\n\nI can send that over this afternoon once I have it ready.";
+        var whitespaceVariant = "Hi  Sam,\r\n\r\nI can  send that over this   afternoon once I have it ready.";
+
+        var samples = new[]
+        {
+            CreateSample("Original", baseBody, new DateTimeOffset(2026, 4, 10, 9, 0, 0, TimeSpan.Zero)),
+            CreateSample("Whitespace variant", whitespaceVariant, new DateTimeOffset(2026, 4, 11, 9, 0, 0, TimeSpan.Zero))
+        };
+
+        var examples = await _extractor.ExtractAsync("domain:example.com", samples, CancellationToken.None);
+
+        Assert.That(examples, Has.Count.EqualTo(1));
+        Assert.That(examples[0].SubjectHint, Is.EqualTo("Whitespace variant"));
+    }
+
     private static SentEmailSample CreateSample(string subject, string body, DateTimeOffset sentAtUtc, string recipientDomain = "example.com") =>
         new(
             Guid.NewGuid().ToString("N"),

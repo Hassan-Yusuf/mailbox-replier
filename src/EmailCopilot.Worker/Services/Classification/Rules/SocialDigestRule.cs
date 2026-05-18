@@ -4,6 +4,9 @@ public sealed class SocialDigestRule : BuiltInClassificationRule
 {
     public override string RuleName => "BUILT_IN:SOCIAL_DIGEST";
     public override string ReasonCode => ClassificationReasonCodes.SocialOrDigest;
+    public override string Description =>
+        "Social-network mention/digest or job-board notification.";
+    public override RuleCategory Category => RuleCategory.Social;
 
     public override RuleEvaluation Evaluate(IncomingEmail email)
     {

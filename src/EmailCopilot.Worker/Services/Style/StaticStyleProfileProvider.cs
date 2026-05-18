@@ -27,6 +27,7 @@ public sealed class StaticStyleProfileProvider
         GreetingUsageRate: 0.7,
         SignoffUsageRate: 0.35,
         QuestionEndingRate: 0.3,
+        ExclamationUsageRate: 0.05,
         GratitudeUsageRate: 0.2,
         ContractionUsageRate: 0.4,
         FragmentUsageRate: 0.05,

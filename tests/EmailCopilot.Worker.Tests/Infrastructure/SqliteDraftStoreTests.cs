@@ -609,4 +609,370 @@ public sealed class SqliteDraftStoreTests
             }
         }
     }
+
+    [Test]
+    public async Task UpdateDraftSetStatusAsync_rejects_invalid_transition()
+    {
+        var databasePath = Path.Combine(Path.GetTempPath(), $"email-copilot-status-transition-{Guid.NewGuid():N}.db");
+
+        try
+        {
+            var store = new SqliteDraftStore(
+                Options.Create(new DatabaseOptions
+                {
+                    ConnectionString = $"Data Source={databasePath};Pooling=False"
+                }));
+
+            await store.InitializeAsync(CancellationToken.None);
+
+            var draftSetId = await store.InsertAsync(
+                new DraftSetRecord
+                {
+                    SourceImapUid = 555,
+                    SourceMessageId = "message-555",
+                    FromAddress = "sender@example.com",
+                    Subject = "Transition test",
+                    OriginalBodyPreview = "Preview",
+                    SourceReceivedAtUtc = new DateTimeOffset(2026, 5, 1, 10, 0, 0, TimeSpan.Zero),
+                    CreatedAtUtc = new DateTimeOffset(2026, 5, 1, 10, 5, 0, TimeSpan.Zero),
+                    LlmMode = "mock",
+                    IsAmbiguous = false,
+                    Status = DraftSetStatuses.Pending,
+                    Variants =
+                    [
+                        new DraftVariantRecord
+                        {
+                            SortOrder = 0,
+                            ReplyShape = ReplyShapes.DirectAnswer,
+                            ReplyShapeLabel = "Direct answer",
+                            Body = "Body",
+                            ConfidenceScore = 0.7,
+                            StyleSegmentUsed = "test"
+                        }
+                    ]
+                },
+                CancellationToken.None);
+
+            await store.UpdateDraftSetStatusAsync(
+                draftSetId,
+                DraftSetStatuses.Dismissed,
+                null,
+                new DateTimeOffset(2026, 5, 1, 10, 10, 0, TimeSpan.Zero),
+                null,
+                true,
+                false,
+                false,
+                CancellationToken.None);
+
+            Assert.ThrowsAsync<InvalidOperationException>(async () =>
+                await store.UpdateDraftSetStatusAsync(
+                    draftSetId,
+                    DraftSetStatuses.Approved,
+                    null,
+                    null,
+                    null,
+                    false,
+                    false,
+                    false,
+                    CancellationToken.None));
+
+            var detail = await store.GetDraftSetByIdAsync(draftSetId, CancellationToken.None);
+            Assert.That(detail!.Status, Is.EqualTo(DraftSetStatuses.Dismissed));
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+
+            if (File.Exists(databasePath))
+            {
+                File.Delete(databasePath);
+            }
+        }
+    }
+
+    [Test]
+    public async Task Should_persist_assigned_and_owner_user_id_columns()
+    {
+        var databasePath = Path.Combine(Path.GetTempPath(), $"email-copilot-owner-cols-{Guid.NewGuid():N}.db");
+
+        try
+        {
+            var store = new SqliteDraftStore(
+                Options.Create(new DatabaseOptions
+                {
+                    ConnectionString = $"Data Source={databasePath};Pooling=False"
+                }));
+
+            await store.InitializeAsync(CancellationToken.None);
+
+            var draftSetId = await store.InsertAsync(
+                new DraftSetRecord
+                {
+                    SourceImapUid = 777,
+                    SourceMessageId = "message-777",
+                    FromAddress = "sender@example.com",
+                    Subject = "Ownership columns",
+                    OriginalBodyPreview = "Preview",
+                    SourceReceivedAtUtc = new DateTimeOffset(2026, 5, 2, 9, 0, 0, TimeSpan.Zero),
+                    CreatedAtUtc = new DateTimeOffset(2026, 5, 2, 9, 5, 0, TimeSpan.Zero),
+                    LlmMode = "mock",
+                    IsAmbiguous = false,
+                    Status = DraftSetStatuses.Pending,
+                    AssignedToUserId = "user-abc",
+                    OwnerUserId = "user-xyz",
+                    Variants =
+                    [
+                        new DraftVariantRecord
+                        {
+                            SortOrder = 0,
+                            ReplyShape = ReplyShapes.DirectAnswer,
+                            ReplyShapeLabel = "Direct answer",
+                            Body = "Body",
+                            ConfidenceScore = 0.7,
+                            StyleSegmentUsed = "test"
+                        }
+                    ]
+                },
+                CancellationToken.None);
+
+            await using var connection = new SqliteConnection($"Data Source={databasePath};Pooling=False");
+            await connection.OpenAsync();
+            await using var command = connection.CreateCommand();
+            command.CommandText = "SELECT AssignedToUserId, OwnerUserId FROM DraftSets WHERE Id = $id;";
+            command.Parameters.AddWithValue("$id", draftSetId);
+
+            await using var reader = await command.ExecuteReaderAsync();
+            Assert.That(await reader.ReadAsync(), Is.True);
+            Assert.That(reader.GetString(0), Is.EqualTo("user-abc"));
+            Assert.That(reader.GetString(1), Is.EqualTo("user-xyz"));
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+
+            if (File.Exists(databasePath))
+            {
+                File.Delete(databasePath);
+            }
+        }
+    }
+
+    [Test]
+    public async Task GetDraftSetByIdAsync_returns_edit_metadata_after_selection_and_edit()
+    {
+        var databasePath = Path.Combine(Path.GetTempPath(), $"email-copilot-edit-metadata-{Guid.NewGuid():N}.db");
+
+        try
+        {
+            var store = new SqliteDraftStore(
+                Options.Create(new DatabaseOptions
+                {
+                    ConnectionString = $"Data Source={databasePath};Pooling=False"
+                }));
+
+            await store.InitializeAsync(CancellationToken.None);
+
+            var draftSetId = await store.InsertAsync(
+                new DraftSetRecord
+                {
+                    SourceImapUid = 902,
+                    SourceMessageId = "message-902",
+                    FromAddress = "sender@example.com",
+                    Subject = "Edit metadata round-trip",
+                    OriginalBodyPreview = "Preview",
+                    SourceReceivedAtUtc = new DateTimeOffset(2026, 5, 8, 9, 0, 0, TimeSpan.Zero),
+                    CreatedAtUtc = new DateTimeOffset(2026, 5, 8, 9, 5, 0, TimeSpan.Zero),
+                    LlmMode = "mock",
+                    IsAmbiguous = false,
+                    Status = DraftSetStatuses.Pending,
+                    Variants =
+                    [
+                        new DraftVariantRecord
+                        {
+                            SortOrder = 0,
+                            ReplyShape = ReplyShapes.DirectAnswer,
+                            ReplyShapeLabel = "Direct answer",
+                            Body = "kitten",
+                            ConfidenceScore = 0.8,
+                            StyleSegmentUsed = "test"
+                        }
+                    ]
+                },
+                CancellationToken.None);
+
+            long variantId;
+            await using (var connection = new SqliteConnection($"Data Source={databasePath};Pooling=False"))
+            {
+                await connection.OpenAsync();
+                await using var lookup = connection.CreateCommand();
+                lookup.CommandText = "SELECT Id FROM DraftVariants WHERE DraftSetId = $id;";
+                lookup.Parameters.AddWithValue("$id", draftSetId);
+                variantId = (long)(await lookup.ExecuteScalarAsync())!;
+            }
+
+            await store.RecordVariantSelectionAsync(variantId, CancellationToken.None);
+            var editedAt = new DateTimeOffset(2026, 5, 8, 9, 30, 0, TimeSpan.Zero);
+            await store.RecordVariantEditAsync(variantId, "sitting", 3, editedAt, CancellationToken.None);
+
+            var detail = await store.GetDraftSetByIdAsync(draftSetId, CancellationToken.None);
+
+            Assert.That(detail, Is.Not.Null);
+            Assert.That(detail!.Variants, Has.Count.EqualTo(1));
+            var variant = detail.Variants[0];
+            Assert.That(variant.WasSelected, Is.True);
+            Assert.That(variant.WasEdited, Is.True);
+            Assert.That(variant.EditedBody, Is.EqualTo("sitting"));
+            Assert.That(variant.EditDistance, Is.EqualTo(3));
+            Assert.That(variant.EditedAtUtc, Is.EqualTo(editedAt));
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+
+            if (File.Exists(databasePath))
+            {
+                File.Delete(databasePath);
+            }
+        }
+    }
+
+    [Test]
+    public async Task RecordVariantSelectionAsync_sets_was_selected_flag()
+    {
+        var databasePath = Path.Combine(Path.GetTempPath(), $"email-copilot-variant-selection-{Guid.NewGuid():N}.db");
+
+        try
+        {
+            var store = new SqliteDraftStore(
+                Options.Create(new DatabaseOptions
+                {
+                    ConnectionString = $"Data Source={databasePath};Pooling=False"
+                }));
+
+            await store.InitializeAsync(CancellationToken.None);
+
+            var draftSetId = await store.InsertAsync(
+                new DraftSetRecord
+                {
+                    SourceImapUid = 901,
+                    SourceMessageId = "message-901",
+                    FromAddress = "sender@example.com",
+                    Subject = "Pick me",
+                    OriginalBodyPreview = "Preview",
+                    SourceReceivedAtUtc = new DateTimeOffset(2026, 5, 8, 9, 0, 0, TimeSpan.Zero),
+                    CreatedAtUtc = new DateTimeOffset(2026, 5, 8, 9, 5, 0, TimeSpan.Zero),
+                    LlmMode = "mock",
+                    IsAmbiguous = false,
+                    Status = DraftSetStatuses.Pending,
+                    Variants =
+                    [
+                        new DraftVariantRecord
+                        {
+                            SortOrder = 0,
+                            ReplyShape = ReplyShapes.DirectAnswer,
+                            ReplyShapeLabel = "Direct answer",
+                            Body = "Hello",
+                            ConfidenceScore = 0.8,
+                            StyleSegmentUsed = "test"
+                        }
+                    ]
+                },
+                CancellationToken.None);
+
+            long variantId;
+            await using (var connection = new SqliteConnection($"Data Source={databasePath};Pooling=False"))
+            {
+                await connection.OpenAsync();
+                await using var lookup = connection.CreateCommand();
+                lookup.CommandText = "SELECT Id FROM DraftVariants WHERE DraftSetId = $id;";
+                lookup.Parameters.AddWithValue("$id", draftSetId);
+                variantId = (long)(await lookup.ExecuteScalarAsync())!;
+            }
+
+            await store.RecordVariantSelectionAsync(variantId, CancellationToken.None);
+
+            await using var verifyConnection = new SqliteConnection($"Data Source={databasePath};Pooling=False");
+            await verifyConnection.OpenAsync();
+            await using var verify = verifyConnection.CreateCommand();
+            verify.CommandText = "SELECT WasSelected FROM DraftVariants WHERE Id = $id;";
+            verify.Parameters.AddWithValue("$id", variantId);
+
+            var wasSelected = (long)(await verify.ExecuteScalarAsync())!;
+            Assert.That(wasSelected, Is.EqualTo(1));
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+
+            if (File.Exists(databasePath))
+            {
+                File.Delete(databasePath);
+            }
+        }
+    }
+
+    [Test]
+    public async Task Should_default_owner_columns_to_null_when_not_provided()
+    {
+        var databasePath = Path.Combine(Path.GetTempPath(), $"email-copilot-owner-null-{Guid.NewGuid():N}.db");
+
+        try
+        {
+            var store = new SqliteDraftStore(
+                Options.Create(new DatabaseOptions
+                {
+                    ConnectionString = $"Data Source={databasePath};Pooling=False"
+                }));
+
+            await store.InitializeAsync(CancellationToken.None);
+
+            var draftSetId = await store.InsertAsync(
+                new DraftSetRecord
+                {
+                    SourceImapUid = 778,
+                    SourceMessageId = "message-778",
+                    FromAddress = "sender@example.com",
+                    Subject = "No ownership",
+                    OriginalBodyPreview = "Preview",
+                    SourceReceivedAtUtc = new DateTimeOffset(2026, 5, 2, 9, 0, 0, TimeSpan.Zero),
+                    CreatedAtUtc = new DateTimeOffset(2026, 5, 2, 9, 5, 0, TimeSpan.Zero),
+                    LlmMode = "mock",
+                    IsAmbiguous = false,
+                    Status = DraftSetStatuses.Pending,
+                    Variants =
+                    [
+                        new DraftVariantRecord
+                        {
+                            SortOrder = 0,
+                            ReplyShape = ReplyShapes.DirectAnswer,
+                            ReplyShapeLabel = "Direct answer",
+                            Body = "Body",
+                            ConfidenceScore = 0.7,
+                            StyleSegmentUsed = "test"
+                        }
+                    ]
+                },
+                CancellationToken.None);
+
+            await using var connection = new SqliteConnection($"Data Source={databasePath};Pooling=False");
+            await connection.OpenAsync();
+            await using var command = connection.CreateCommand();
+            command.CommandText = "SELECT AssignedToUserId, OwnerUserId FROM DraftSets WHERE Id = $id;";
+            command.Parameters.AddWithValue("$id", draftSetId);
+
+            await using var reader = await command.ExecuteReaderAsync();
+            Assert.That(await reader.ReadAsync(), Is.True);
+            Assert.That(reader.IsDBNull(0), Is.True);
+            Assert.That(reader.IsDBNull(1), Is.True);
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+
+            if (File.Exists(databasePath))
+            {
+                File.Delete(databasePath);
+            }
+        }
+    }
 }

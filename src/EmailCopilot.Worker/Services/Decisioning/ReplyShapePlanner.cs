@@ -4,6 +4,19 @@ namespace EmailCopilot.Worker;
 
 public sealed class ReplyShapePlanner : IReplyShapePlanner
 {
+    private const double MinimumSpread = 0.10;
+
+    private static readonly IReadOnlyDictionary<string, string> ShapeFamilies =
+        new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            [ReplyShapes.Acknowledge] = "acknowledge",
+            [ReplyShapes.AcknowledgeAndAsk] = "acknowledge",
+            [ReplyShapes.ConfirmAndRequest] = "confirm",
+            [ReplyShapes.ConfirmAndClose] = "confirm",
+            [ReplyShapes.Decline] = "decline",
+            [ReplyShapes.DirectAnswer] = "direct"
+        };
+
     public ReplyPlan Plan(IncomingEmail email, StyleProfile styleProfile, EmailRequestAnalysis analysis)
     {
         var subject = email.Subject.Trim();
@@ -20,8 +33,18 @@ public sealed class ReplyShapePlanner : IReplyShapePlanner
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
+        var unanswerableInfoQuery = LooksLikeUnanswerableInfoQuery(combined);
+
         if (analysis.Asks.Count == 1 && analysis.DecisionBranches.Count == 0 && LooksLikeDirectQuestion(combined))
         {
+            if (unanswerableInfoQuery)
+            {
+                return new ReplyPlan(
+                    [
+                        new ReplyShapeOption(ReplyShapes.AcknowledgeAndAsk, "Acknowledge and ask", 0.78, asks)
+                    ]);
+            }
+
             return new ReplyPlan(
                 [
                     new ReplyShapeOption(ReplyShapes.DirectAnswer, "Direct answer", 0.86, asks)
@@ -34,7 +57,7 @@ public sealed class ReplyShapePlanner : IReplyShapePlanner
             var highStakes = LooksLikeHighStakesContext(combined);
             var logistics = LooksLikeLogisticsOrConfirmation(combined);
 
-            if (branchShapes.Contains(ReplyShapes.DirectAnswer) && analysis.Asks.Count > 0)
+            if (branchShapes.Contains(ReplyShapes.DirectAnswer) && analysis.Asks.Count > 0 && !unanswerableInfoQuery)
             {
                 AddOption(options, ReplyShapes.DirectAnswer, "Direct answer", 0.64, asks);
             }
@@ -64,6 +87,22 @@ public sealed class ReplyShapePlanner : IReplyShapePlanner
                 AddOption(options, ReplyShapes.ConfirmAndClose, "Confirm and close", logistics ? 0.57 : 0.46, asks);
             }
 
+            if (unanswerableInfoQuery)
+            {
+                var existingAcknowledgeAndAsk = options.FirstOrDefault(option =>
+                    string.Equals(option.Shape, ReplyShapes.AcknowledgeAndAsk, StringComparison.OrdinalIgnoreCase));
+
+                if (existingAcknowledgeAndAsk is null)
+                {
+                    options.Add(new ReplyShapeOption(ReplyShapes.AcknowledgeAndAsk, "Acknowledge and ask", 0.78, asks));
+                }
+                else
+                {
+                    options.Remove(existingAcknowledgeAndAsk);
+                    options.Add(new ReplyShapeOption(ReplyShapes.AcknowledgeAndAsk, "Acknowledge and ask", 0.78, asks));
+                }
+            }
+
             if (options.Count == 0)
             {
                 options.Add(new ReplyShapeOption(ReplyShapes.Acknowledge, "Acknowledge only", 0.52, asks));
@@ -91,12 +130,41 @@ public sealed class ReplyShapePlanner : IReplyShapePlanner
 
     private static IReadOnlyList<ReplyShapeOption> Deduplicate(IEnumerable<ReplyShapeOption> options)
     {
-        return options
+        var deduped = options
             .GroupBy(
                 option => $"{option.Label}|{string.Join('|', option.MustAddressAsks ?? [])}",
                 StringComparer.OrdinalIgnoreCase)
             .Select(static group => group.OrderByDescending(option => option.ConfidenceScore).First())
+            .OrderByDescending(option => option.ConfidenceScore)
             .ToArray();
+
+        return ApplyMinimumSpread(deduped);
+    }
+
+    private static IReadOnlyList<ReplyShapeOption> ApplyMinimumSpread(IReadOnlyList<ReplyShapeOption> sorted)
+    {
+        var kept = new List<ReplyShapeOption>(sorted.Count);
+        var keptScoreByFamily = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var option in sorted)
+        {
+            if (!ShapeFamilies.TryGetValue(option.Shape, out var family))
+            {
+                kept.Add(option);
+                continue;
+            }
+
+            if (keptScoreByFamily.TryGetValue(family, out var keptScore)
+                && keptScore - option.ConfidenceScore < MinimumSpread)
+            {
+                continue;
+            }
+
+            kept.Add(option);
+            keptScoreByFamily[family] = option.ConfidenceScore;
+        }
+
+        return kept;
     }
 
     private static bool LooksLikeDirectQuestion(string value)
@@ -112,6 +180,23 @@ public sealed class ReplyShapePlanner : IReplyShapePlanner
         return Regex.IsMatch(
             value,
             @"\b(can you|could you|would you|are you|do you|please (send|confirm|let me know|advise|provide))\b",
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+    }
+
+    private static bool LooksLikeUnanswerableInfoQuery(string value)
+    {
+        // Factual questions about facts only the recipient could know — property state, inventory,
+        // counts, locations. The LLM cannot answer these and will hallucinate if forced to (e.g.
+        // "Yes, there is a dehumidifier at [property address]"). Gate DIRECT_ANSWER and prefer
+        // ACKNOWLEDGE_AND_ASK so the reply is "got it — can you confirm X?" rather than fabricated.
+        if (!value.Contains('?', StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        return Regex.IsMatch(
+            value,
+            @"\b(is there|are there|how many|how much|do you have|what's the|what is the|where is the|when was the|when did the)\b",
             RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
     }
 

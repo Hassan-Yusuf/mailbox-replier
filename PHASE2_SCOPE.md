@@ -107,7 +107,7 @@ Not in scope yet:
 - shared mailbox assignment workflows
 - CRM entity mapping
 - pipeline-stage-aware business logic
-- user-defined intent types
+- user-defined reply shape types
 - multi-user/team style models
 
 Those are later-phase concerns.
@@ -129,7 +129,7 @@ Phase 2 is complete when:
 - the system persists draft sets rather than only single draft rows
 - clear emails still yield one sensible variant
 - ambiguous emails can yield 2-3 shape-distinct variants
-- tests cover both single-intent and multi-intent paths
+- tests cover both single-shape and multi-shape paths
 - optional reply-scope settings work without changing the default behavior
 - the architecture is still clean enough to support a later UI without another foundational rewrite
 

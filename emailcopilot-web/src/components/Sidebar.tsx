@@ -6,6 +6,7 @@ export function Sidebar() {
       <NavLink to="/review" title="Review Queue">Q</NavLink>
       <NavLink to="/skipped" title="Skip Audit">S</NavLink>
       <NavLink to="/runs" title="Run History">H</NavLink>
+      <NavLink to="/policies" title="Rule Policies">P</NavLink>
     </nav>
   );
 }

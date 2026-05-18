@@ -121,6 +121,9 @@ public sealed class ClassificationRegressionTests
         yield return new TestCaseData(
             CreateEmail("copilot@infomails.microsoft.com", "Microsoft Copilot", "See what a day with Copilot feels like", bodyText: "See what a day with Copilot feels like and explore the latest product updates."),
             ClassificationReasonCodes.AutomatedSender);
+        yield return new TestCaseData(
+            CreateEmail("welcome@supabase.com", "Supabase", "Welcome to Supabase", bodyText: "Welcome to Supabase, the Postgres development platform. Create your first project."),
+            ClassificationReasonCodes.NoReplySender);
     }
 
     public static IEnumerable<TestCaseData> KnownReplyCases()
@@ -133,6 +136,8 @@ public sealed class ClassificationRegressionTests
             CreateEmail("lee@cateringelite.co.uk", "Lee", "Shift Available This Sunday"));
         yield return new TestCaseData(
             CreateEmail("sophie@cateringelite.co.uk", "Sophie", "Head Chef Vacancy - Colchester"));
+        yield return new TestCaseData(
+            CreateEmail("alex.welcome@somefirm.com", "Alex Welcome", "Quick question about the contract", bodyText: "Hi Hassan, can you send over the latest draft of the contract when you have a moment?"));
     }
 
     [TestCaseSource(nameof(KnownSkipCases))]

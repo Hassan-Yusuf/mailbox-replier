@@ -1,3 +1,4 @@
+using System.Text.RegularExpressions;
 using Microsoft.Extensions.Options;
 
 namespace EmailCopilot.Worker;
@@ -255,7 +256,33 @@ public sealed class StyleProfileService : IStyleProfileSelector
             ClosingContainsInlineSignature(profile.Closing) ||
             LooksSuspiciousSignature(profile.Signature) ||
             LooksContaminatedValue(profile.Signature) ||
-            profile.CommonPhrases.Any(LooksContaminatedValue));
+            LooksLikePromotional(profile.Signature) ||
+            profile.CommonPhrases.Any(LooksContaminatedValue) ||
+            profile.CommonPhrases.Any(LooksLikePromotional));
+    }
+
+    private static readonly Regex PromotionalTravelRegex = new(
+        @"\b(cheap flights|deals from|book now|special offer|low fares)\b",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.Compiled);
+
+    private static readonly Regex PromotionalProductListingRegex = new(
+        @"^[A-Z][a-z]+:\s+\S+\s+\d+[A-Za-z]?\s+(in\s+\d+)?",
+        RegexOptions.CultureInvariant | RegexOptions.Compiled);
+
+    private static readonly Regex PromotionalOutlookShareRegex = new(
+        @"https?://outlook\.(office|com|office365\.com)",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.Compiled);
+
+    internal static bool LooksLikePromotional(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return false;
+        }
+
+        return PromotionalTravelRegex.IsMatch(value) ||
+               PromotionalProductListingRegex.IsMatch(value) ||
+               PromotionalOutlookShareRegex.IsMatch(value);
     }
 
     private static bool LooksContaminatedValue(string value)

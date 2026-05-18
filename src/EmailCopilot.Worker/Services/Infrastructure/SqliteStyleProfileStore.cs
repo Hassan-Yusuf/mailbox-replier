@@ -35,6 +35,7 @@ public sealed class SqliteStyleProfileStore
                 GreetingUsageRate REAL NOT NULL DEFAULT 0,
                 SignoffUsageRate REAL NOT NULL DEFAULT 0,
                 QuestionEndingRate REAL NOT NULL DEFAULT 0,
+                ExclamationUsageRate REAL NOT NULL DEFAULT 0,
                 GratitudeUsageRate REAL NOT NULL DEFAULT 0,
                 ContractionUsageRate REAL NOT NULL DEFAULT 0,
                 FragmentUsageRate REAL NOT NULL DEFAULT 0,
@@ -49,16 +50,20 @@ public sealed class SqliteStyleProfileStore
 
         await command.ExecuteNonQueryAsync(cancellationToken);
 
-        await EnsureColumnAsync(connection, "StyleProfileSegments", "GreetingUsageRate", "REAL NOT NULL DEFAULT 0", cancellationToken);
-        await EnsureColumnAsync(connection, "StyleProfileSegments", "SignoffUsageRate", "REAL NOT NULL DEFAULT 0", cancellationToken);
-        await EnsureColumnAsync(connection, "StyleProfileSegments", "QuestionEndingRate", "REAL NOT NULL DEFAULT 0", cancellationToken);
-        await EnsureColumnAsync(connection, "StyleProfileSegments", "GratitudeUsageRate", "REAL NOT NULL DEFAULT 0", cancellationToken);
-        await EnsureColumnAsync(connection, "StyleProfileSegments", "ContractionUsageRate", "REAL NOT NULL DEFAULT 0", cancellationToken);
-        await EnsureColumnAsync(connection, "StyleProfileSegments", "FragmentUsageRate", "REAL NOT NULL DEFAULT 0", cancellationToken);
-        await EnsureColumnAsync(connection, "StyleProfileSegments", "ExplicitNextStepRate", "REAL NOT NULL DEFAULT 0", cancellationToken);
-        await EnsureColumnAsync(connection, "StyleProfileSegments", "TypicalSentenceCountMin", "INTEGER NOT NULL DEFAULT 1", cancellationToken);
-        await EnsureColumnAsync(connection, "StyleProfileSegments", "TypicalSentenceCountMax", "INTEGER NOT NULL DEFAULT 2", cancellationToken);
-        await EnsureColumnAsync(connection, "StyleProfileSegments", "FormalityScore", "REAL NOT NULL DEFAULT 0.5", cancellationToken);
+        await SqliteMigrationHelpers.EnsureColumnAsync(connection, "StyleProfileSegments", "GreetingUsageRate", "REAL NOT NULL DEFAULT 0", cancellationToken);
+        await SqliteMigrationHelpers.EnsureColumnAsync(connection, "StyleProfileSegments", "SignoffUsageRate", "REAL NOT NULL DEFAULT 0", cancellationToken);
+        await SqliteMigrationHelpers.EnsureColumnAsync(connection, "StyleProfileSegments", "QuestionEndingRate", "REAL NOT NULL DEFAULT 0", cancellationToken);
+        await SqliteMigrationHelpers.EnsureColumnAsync(connection, "StyleProfileSegments", "ExclamationUsageRate", "REAL NOT NULL DEFAULT 0", cancellationToken);
+        await SqliteMigrationHelpers.EnsureColumnAsync(connection, "StyleProfileSegments", "GratitudeUsageRate", "REAL NOT NULL DEFAULT 0", cancellationToken);
+        await SqliteMigrationHelpers.EnsureColumnAsync(connection, "StyleProfileSegments", "ContractionUsageRate", "REAL NOT NULL DEFAULT 0", cancellationToken);
+        await SqliteMigrationHelpers.EnsureColumnAsync(connection, "StyleProfileSegments", "FragmentUsageRate", "REAL NOT NULL DEFAULT 0", cancellationToken);
+        await SqliteMigrationHelpers.EnsureColumnAsync(connection, "StyleProfileSegments", "ExplicitNextStepRate", "REAL NOT NULL DEFAULT 0", cancellationToken);
+        await SqliteMigrationHelpers.EnsureColumnAsync(connection, "StyleProfileSegments", "TypicalSentenceCountMin", "INTEGER NOT NULL DEFAULT 1", cancellationToken);
+        await SqliteMigrationHelpers.EnsureColumnAsync(connection, "StyleProfileSegments", "TypicalSentenceCountMax", "INTEGER NOT NULL DEFAULT 2", cancellationToken);
+        await SqliteMigrationHelpers.EnsureColumnAsync(connection, "StyleProfileSegments", "FormalityScore", "REAL NOT NULL DEFAULT 0.5", cancellationToken);
+        await SqliteMigrationHelpers.EnsureColumnAsync(connection, "StyleProfileSegments", "AvoidPhrasesJson", "TEXT NULL", cancellationToken);
+        await SqliteMigrationHelpers.EnsureColumnAsync(connection, "StyleProfileSegments", "FavoredPhrasesJson", "TEXT NULL", cancellationToken);
+        await SqliteMigrationHelpers.EnsureColumnAsync(connection, "StyleProfileSegments", "ObservedDiscourseMarkersJson", "TEXT NULL", cancellationToken);
     }
 
     public async Task<IReadOnlyDictionary<string, StyleProfile>> GetAllAsync(CancellationToken cancellationToken)
@@ -87,7 +92,11 @@ public sealed class SqliteStyleProfileStore
                    TypicalSentenceCountMax,
                    FormalityScore,
                    SampleSize,
-                   BuiltAtUtc
+                   BuiltAtUtc,
+                   AvoidPhrasesJson,
+                   FavoredPhrasesJson,
+                   ExclamationUsageRate,
+                   ObservedDiscourseMarkersJson
             FROM StyleProfileSegments;
             """;
 
@@ -98,6 +107,66 @@ public sealed class SqliteStyleProfileStore
         {
             var commonPhrasesJson = reader.GetString(5);
             var commonPhrases = JsonSerializer.Deserialize<List<string>>(commonPhrasesJson, JsonOptions) ?? [];
+
+            IReadOnlyDictionary<string, IReadOnlyList<string>>? avoidPhrases = null;
+            DateTimeOffset? avoidPhrasesUpdatedAtUtc = null;
+
+            if (!reader.IsDBNull(19))
+            {
+                var avoidJson = reader.GetString(19);
+                if (!string.IsNullOrWhiteSpace(avoidJson))
+                {
+                    var blob = JsonSerializer.Deserialize<PhrasesBlob>(avoidJson, JsonOptions);
+                    if (blob is not null)
+                    {
+                        if (blob.Phrases is not null && blob.Phrases.Count > 0)
+                        {
+                            avoidPhrases = blob.Phrases.ToDictionary(
+                                static kv => kv.Key,
+                                static kv => (IReadOnlyList<string>)kv.Value.ToArray(),
+                                StringComparer.OrdinalIgnoreCase);
+                        }
+                        avoidPhrasesUpdatedAtUtc = blob.UpdatedAtUtc;
+                    }
+                }
+            }
+
+            IReadOnlyDictionary<string, IReadOnlyList<string>>? favoredPhrases = null;
+            DateTimeOffset? favoredPhrasesUpdatedAtUtc = null;
+
+            if (!reader.IsDBNull(20))
+            {
+                var favoredJson = reader.GetString(20);
+                if (!string.IsNullOrWhiteSpace(favoredJson))
+                {
+                    var blob = JsonSerializer.Deserialize<PhrasesBlob>(favoredJson, JsonOptions);
+                    if (blob is not null)
+                    {
+                        if (blob.Phrases is not null && blob.Phrases.Count > 0)
+                        {
+                            favoredPhrases = blob.Phrases.ToDictionary(
+                                static kv => kv.Key,
+                                static kv => (IReadOnlyList<string>)kv.Value.ToArray(),
+                                StringComparer.OrdinalIgnoreCase);
+                        }
+                        favoredPhrasesUpdatedAtUtc = blob.UpdatedAtUtc;
+                    }
+                }
+            }
+
+            var exclamationUsageRate = reader.IsDBNull(21) ? 0.0 : reader.GetDouble(21);
+
+            IReadOnlyList<DiscourseMarkerObservation>? observedMarkers = null;
+            if (reader.FieldCount > 22 && !reader.IsDBNull(22))
+            {
+                var markersJson = reader.GetString(22);
+                if (!string.IsNullOrWhiteSpace(markersJson))
+                {
+                    observedMarkers = JsonSerializer
+                        .Deserialize<List<DiscourseMarkerObservation>>(markersJson, JsonOptions)
+                        ?? new List<DiscourseMarkerObservation>();
+                }
+            }
 
             var profile = new StyleProfile(
                 SegmentKey: reader.GetString(0),
@@ -110,6 +179,7 @@ public sealed class SqliteStyleProfileStore
                 GreetingUsageRate: reader.GetDouble(7),
                 SignoffUsageRate: reader.GetDouble(8),
                 QuestionEndingRate: reader.GetDouble(9),
+                ExclamationUsageRate: exclamationUsageRate,
                 GratitudeUsageRate: reader.GetDouble(10),
                 ContractionUsageRate: reader.GetDouble(11),
                 FragmentUsageRate: reader.GetDouble(12),
@@ -118,12 +188,23 @@ public sealed class SqliteStyleProfileStore
                 TypicalSentenceCountMax: reader.GetInt32(15),
                 FormalityScore: reader.GetDouble(16),
                 SampleSize: reader.GetInt32(17),
-                BuiltAtUtc: DateTimeOffset.Parse(reader.GetString(18)));
+                BuiltAtUtc: DateTimeOffset.Parse(reader.GetString(18)),
+                AvoidPhrases: avoidPhrases,
+                AvoidPhrasesUpdatedAtUtc: avoidPhrasesUpdatedAtUtc,
+                FavoredPhrases: favoredPhrases,
+                FavoredPhrasesUpdatedAtUtc: favoredPhrasesUpdatedAtUtc,
+                ObservedDiscourseMarkers: observedMarkers);
 
             profiles[profile.SegmentKey] = profile;
         }
 
         return profiles;
+    }
+
+    private sealed class PhrasesBlob
+    {
+        public Dictionary<string, List<string>>? Phrases { get; set; }
+        public DateTimeOffset? UpdatedAtUtc { get; set; }
     }
 
     public async Task ReplaceAllAsync(
@@ -159,6 +240,7 @@ public sealed class SqliteStyleProfileStore
                     GreetingUsageRate,
                     SignoffUsageRate,
                     QuestionEndingRate,
+                    ExclamationUsageRate,
                     GratitudeUsageRate,
                     ContractionUsageRate,
                     FragmentUsageRate,
@@ -167,7 +249,10 @@ public sealed class SqliteStyleProfileStore
                     TypicalSentenceCountMax,
                     FormalityScore,
                     SampleSize,
-                    BuiltAtUtc
+                    BuiltAtUtc,
+                    AvoidPhrasesJson,
+                    FavoredPhrasesJson,
+                    ObservedDiscourseMarkersJson
                 )
                 VALUES (
                     $segmentKey,
@@ -180,6 +265,7 @@ public sealed class SqliteStyleProfileStore
                     $greetingUsageRate,
                     $signoffUsageRate,
                     $questionEndingRate,
+                    $exclamationUsageRate,
                     $gratitudeUsageRate,
                     $contractionUsageRate,
                     $fragmentUsageRate,
@@ -188,7 +274,10 @@ public sealed class SqliteStyleProfileStore
                     $typicalSentenceCountMax,
                     $formalityScore,
                     $sampleSize,
-                    $builtAtUtc
+                    $builtAtUtc,
+                    $avoidPhrasesJson,
+                    $favoredPhrasesJson,
+                    $observedDiscourseMarkersJson
                 );
                 """;
 
@@ -202,6 +291,7 @@ public sealed class SqliteStyleProfileStore
             insertCommand.Parameters.AddWithValue("$greetingUsageRate", profile.GreetingUsageRate);
             insertCommand.Parameters.AddWithValue("$signoffUsageRate", profile.SignoffUsageRate);
             insertCommand.Parameters.AddWithValue("$questionEndingRate", profile.QuestionEndingRate);
+            insertCommand.Parameters.AddWithValue("$exclamationUsageRate", profile.ExclamationUsageRate);
             insertCommand.Parameters.AddWithValue("$gratitudeUsageRate", profile.GratitudeUsageRate);
             insertCommand.Parameters.AddWithValue("$contractionUsageRate", profile.ContractionUsageRate);
             insertCommand.Parameters.AddWithValue("$fragmentUsageRate", profile.FragmentUsageRate);
@@ -211,6 +301,43 @@ public sealed class SqliteStyleProfileStore
             insertCommand.Parameters.AddWithValue("$formalityScore", profile.FormalityScore);
             insertCommand.Parameters.AddWithValue("$sampleSize", profile.SampleSize);
             insertCommand.Parameters.AddWithValue("$builtAtUtc", profile.BuiltAtUtc.UtcDateTime.ToString("O"));
+
+            object avoidPhrasesValue = DBNull.Value;
+            if (profile.AvoidPhrases is not null && profile.AvoidPhrases.Count > 0)
+            {
+                var blob = new PhrasesBlob
+                {
+                    Phrases = profile.AvoidPhrases.ToDictionary(
+                        static kv => kv.Key,
+                        static kv => kv.Value.ToList(),
+                        StringComparer.OrdinalIgnoreCase),
+                    UpdatedAtUtc = profile.AvoidPhrasesUpdatedAtUtc
+                };
+                avoidPhrasesValue = JsonSerializer.Serialize(blob, JsonOptions);
+            }
+            insertCommand.Parameters.AddWithValue("$avoidPhrasesJson", avoidPhrasesValue);
+
+            object favoredPhrasesValue = DBNull.Value;
+            if (profile.FavoredPhrases is not null && profile.FavoredPhrases.Count > 0)
+            {
+                var blob = new PhrasesBlob
+                {
+                    Phrases = profile.FavoredPhrases.ToDictionary(
+                        static kv => kv.Key,
+                        static kv => kv.Value.ToList(),
+                        StringComparer.OrdinalIgnoreCase),
+                    UpdatedAtUtc = profile.FavoredPhrasesUpdatedAtUtc
+                };
+                favoredPhrasesValue = JsonSerializer.Serialize(blob, JsonOptions);
+            }
+            insertCommand.Parameters.AddWithValue("$favoredPhrasesJson", favoredPhrasesValue);
+
+            object observedDiscourseMarkersValue = DBNull.Value;
+            if (profile.ObservedDiscourseMarkers is not null && profile.ObservedDiscourseMarkers.Count > 0)
+            {
+                observedDiscourseMarkersValue = JsonSerializer.Serialize(profile.ObservedDiscourseMarkers, JsonOptions);
+            }
+            insertCommand.Parameters.AddWithValue("$observedDiscourseMarkersJson", observedDiscourseMarkersValue);
 
             await insertCommand.ExecuteNonQueryAsync(cancellationToken);
         }
@@ -236,29 +363,4 @@ public sealed class SqliteStyleProfileStore
         }
     }
 
-    private static async Task EnsureColumnAsync(
-        SqliteConnection connection,
-        string tableName,
-        string columnName,
-        string columnDefinition,
-        CancellationToken cancellationToken)
-    {
-        await using var pragmaCommand = connection.CreateCommand();
-        pragmaCommand.CommandText = $"PRAGMA table_info({tableName});";
-
-        await using var reader = await pragmaCommand.ExecuteReaderAsync(cancellationToken);
-        while (await reader.ReadAsync(cancellationToken))
-        {
-            if (string.Equals(reader.GetString(1), columnName, StringComparison.OrdinalIgnoreCase))
-            {
-                return;
-            }
-        }
-
-        await reader.DisposeAsync();
-
-        await using var alterCommand = connection.CreateCommand();
-        alterCommand.CommandText = $"ALTER TABLE {tableName} ADD COLUMN {columnName} {columnDefinition};";
-        await alterCommand.ExecuteNonQueryAsync(cancellationToken);
-    }
 }

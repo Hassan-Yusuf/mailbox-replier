@@ -4,6 +4,9 @@ public sealed class ListOrBroadcastRule : BuiltInClassificationRule
 {
     public override string RuleName => "BUILT_IN:LIST_OR_BROADCAST";
     public override string ReasonCode => ClassificationReasonCodes.ListOrBroadcastMail;
+    public override string Description =>
+        "Mailing-list or broadcast mail (List-Unsubscribe / List-Id headers, bulk precedence, or broadcast subjects).";
+    public override RuleCategory Category => RuleCategory.BulkBroadcast;
 
     public override RuleEvaluation Evaluate(IncomingEmail email)
     {

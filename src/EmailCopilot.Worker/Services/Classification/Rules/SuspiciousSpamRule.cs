@@ -12,6 +12,11 @@ public sealed class SuspiciousSpamRule : BuiltInClassificationRule
 
     public override string ReasonCode => ClassificationReasonCodes.SuspiciousOrSpam;
 
+    public override string Description =>
+        "Looks like spam, phishing, or token-soup attachment lure.";
+
+    public override RuleCategory Category => RuleCategory.Suspicious;
+
     public override RuleEvaluation Evaluate(IncomingEmail email)
     {
         var subject = email.Subject.Trim();
@@ -24,9 +29,19 @@ public sealed class SuspiciousSpamRule : BuiltInClassificationRule
             return Matched(RuleName, ReasonCode, "attachment-lure-with-token-soup");
         }
 
-        if (LooksLikePrizeOrGiveaway(loweredSubject) && LooksLikeConfusableSpam(subject))
+        if (LooksLikePrizeOrGiveaway(loweredSubject))
         {
-            return Matched(RuleName, ReasonCode, "obfuscated-prize-subject");
+            return Matched(
+                RuleName,
+                ReasonCode,
+                LooksLikeConfusableSpam(subject)
+                    ? "obfuscated-prize-subject"
+                    : "prize-giveaway-subject");
+        }
+
+        if (LooksLikeScareTacticPhishing(loweredSubject))
+        {
+            return Matched(RuleName, ReasonCode, "scare-tactic-phishing-subject");
         }
 
         if (LooksLikeTokenSoup(body) && CountQuotedPipeSegments(body) >= 3)
@@ -52,7 +67,20 @@ public sealed class SuspiciousSpamRule : BuiltInClassificationRule
             "free kit",
             "winner",
             "gift card",
+            "you've won",
+            "youve won",
+            "you have won",
             "prize");
+
+    private static bool LooksLikeScareTacticPhishing(string subject) =>
+        ContainsAny(
+            subject,
+            "complaints about your",
+            "complaint about your",
+            "your account has been suspended",
+            "your account will be suspended",
+            "your email has been suspended",
+            "your email will be suspended");
 
     private static bool LooksLikeConfusableSpam(string subject) =>
         subject.Any(character => character is 'α' or 'ı' or 'е' or 'ο' or 'ѕ');

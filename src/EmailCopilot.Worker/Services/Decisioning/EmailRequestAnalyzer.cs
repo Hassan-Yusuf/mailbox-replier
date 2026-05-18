@@ -172,6 +172,14 @@ public sealed class EmailRequestAnalyzer : IEmailRequestAnalyzer
             Regex.IsMatch(
                 email.Subject ?? string.Empty,
                 @"\b(shift|rota|schedule|availability|cover)\b",
+                RegexOptions.IgnoreCase | RegexOptions.CultureInvariant) ||
+            Regex.IsMatch(
+                email.BodyText,
+                @"\b(where (is|are)|do you (have|know)|have you (got|done|worked)|is there|are there|how many|which|what (is|are))\b",
+                RegexOptions.IgnoreCase | RegexOptions.CultureInvariant) ||
+            Regex.IsMatch(
+                email.BodyText,
+                @"\b(experience|qualifications?|credentials?|background)\b",
                 RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
         return new EmailRequestAnalysis(asks, branches, deadlines, urgency, requiresPersonalConfirmation);
@@ -229,7 +237,12 @@ Return only JSON with this shape:
   ""requiresPersonalConfirmation"": true
 }}
 
-""requiresPersonalConfirmation"": true when the email asks the recipient to confirm their own personal availability, capacity, or willingness (scheduling, shift coverage, attendance). false otherwise.
+""requiresPersonalConfirmation"": true when the reply would require facts only the recipient personally knows. This includes:
+- personal availability, capacity, or willingness (scheduling, shift coverage, attendance)
+- property/location details the recipient owns or manages (where things are, how many, condition)
+- the recipient's own experience, qualifications, credentials, history, or preferences
+- decisions only the recipient can make (interest, intent, commitment)
+Set false only when the email is purely informational, a notification, or asks for facts a stranger could answer from public/shared info.
 
 Email subject: {email.Subject}
 Sender: {email.From.Address}

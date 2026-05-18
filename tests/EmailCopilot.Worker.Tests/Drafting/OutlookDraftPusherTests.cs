@@ -73,7 +73,9 @@ public sealed class OutlookDraftPusherTests
             sourceMessageId,
             null,
             null,
-            [CreateDraftVariantDetail()]);
+            [CreateDraftVariantDetail()],
+            null,
+            null);
 
     private static DraftVariantDetail CreateDraftVariantDetail(string body = "Hi,\n\nDraft body.") =>
         new(

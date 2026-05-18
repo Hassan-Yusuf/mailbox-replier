@@ -6,6 +6,11 @@ public sealed class BroadcastFormattedRule : BuiltInClassificationRule
 
     public override string ReasonCode => ClassificationReasonCodes.BroadcastFormattedMail;
 
+    public override string Description =>
+        "Policy, T&Cs, or bulk update broadcast formatted as a newsletter.";
+
+    public override RuleCategory Category => RuleCategory.BulkBroadcast;
+
     public override RuleEvaluation Evaluate(IncomingEmail email)
     {
         var subject = email.Subject.Trim().ToLowerInvariant();

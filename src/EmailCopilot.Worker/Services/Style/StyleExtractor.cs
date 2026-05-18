@@ -5,7 +5,9 @@ namespace EmailCopilot.Worker;
 public sealed partial class StyleExtractor
 {
     private const int MaxCommonPhrases = 5;
+    private const int MaxFavoredPhrasesPerShape = 3;
     private const int MinimumAuthoredWordCount = 8;
+    private const int FavoredPhrasesMinCountSampleThreshold = 10;
     private readonly StyleAuthoredBodyPipeline _authoredBodyPipeline;
     private readonly StyleSentenceFilterPipeline _sentenceFilterPipeline;
 
@@ -31,6 +33,7 @@ public sealed partial class StyleExtractor
         var closingCounts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
         var signatureCounts = new Dictionary<string, int>(StringComparer.Ordinal);
         var phraseCounts = new Dictionary<string, PhraseSample>(StringComparer.OrdinalIgnoreCase);
+        var favoredPhraseCounts = new Dictionary<string, Dictionary<string, PhraseSample>>(StringComparer.Ordinal);
 
         var sentenceLengths = new List<int>();
         var sentenceCounts = new List<int>();
@@ -40,12 +43,14 @@ public sealed partial class StyleExtractor
         var greetingUsageCount = 0;
         var signoffUsageCount = 0;
         var questionEndingCount = 0;
+        var exclamationEndingCount = 0;
         var gratitudeUsageCount = 0;
         var contractionUsageCount = 0;
         var fragmentUsageCount = 0;
         var explicitNextStepCount = 0;
 
         var usedSampleCount = 0;
+        var authoredBodies = new List<string>();
 
         foreach (var sentEmail in sentEmails)
         {
@@ -66,6 +71,7 @@ public sealed partial class StyleExtractor
             }
 
             usedSampleCount++;
+            authoredBodies.Add(authoredBody);
 
             var lines = authoredBody
                 .Split(new[] { "\r\n", "\n" }, StringSplitOptions.None)
@@ -113,6 +119,11 @@ public sealed partial class StyleExtractor
             if (contentText.TrimEnd().EndsWith("?", StringComparison.Ordinal))
             {
                 questionEndingCount++;
+            }
+
+            if (contentText.TrimEnd().EndsWith("!", StringComparison.Ordinal))
+            {
+                exclamationEndingCount++;
             }
 
             if (ContainsGratitude(contentText))
@@ -164,7 +175,43 @@ public sealed partial class StyleExtractor
 
                 phraseCounts[phrase.Normalized] = existing with { Count = existing.Count + 1 };
             }
+
+            foreach (var (shape, sample) in ExtractFavoredPhraseCandidates(contentLines))
+            {
+                if (!favoredPhraseCounts.TryGetValue(shape, out var inner))
+                {
+                    inner = new Dictionary<string, PhraseSample>(StringComparer.OrdinalIgnoreCase);
+                    favoredPhraseCounts[shape] = inner;
+                }
+
+                if (!inner.TryGetValue(sample.Normalized, out var existing))
+                {
+                    inner[sample.Normalized] = sample;
+                    continue;
+                }
+
+                inner[sample.Normalized] = existing with { Count = existing.Count + 1 };
+            }
         }
+
+        var favoredMinCount = usedSampleCount >= FavoredPhrasesMinCountSampleThreshold ? 2 : 1;
+        var favoredPhrasesByShape = favoredPhraseCounts
+            .Select(pair => new
+            {
+                Shape = pair.Key,
+                Phrases = pair.Value.Values
+                    .Where(sample => sample.Count >= favoredMinCount)
+                    .OrderByDescending(sample => sample.Count)
+                    .ThenBy(sample => sample.Original, StringComparer.OrdinalIgnoreCase)
+                    .Take(MaxFavoredPhrasesPerShape)
+                    .Select(sample => sample.Original)
+                    .ToArray()
+            })
+            .Where(entry => entry.Phrases.Length > 0)
+            .ToDictionary(
+                entry => entry.Shape,
+                entry => (IReadOnlyList<string>)entry.Phrases,
+                StringComparer.Ordinal);
 
         var averageSentenceLength = sentenceLengths.Count == 0
             ? fallbackProfile.AverageSentenceLength
@@ -173,6 +220,7 @@ public sealed partial class StyleExtractor
         var greetingUsageRate = BuildRate(greetingUsageCount, usedSampleCount, fallbackProfile.GreetingUsageRate);
         var signoffUsageRate = BuildRate(signoffUsageCount, usedSampleCount, fallbackProfile.SignoffUsageRate);
         var questionEndingRate = BuildRate(questionEndingCount, usedSampleCount, fallbackProfile.QuestionEndingRate);
+        var exclamationUsageRate = BuildRate(exclamationEndingCount, usedSampleCount, fallbackProfile.ExclamationUsageRate);
         var gratitudeUsageRate = BuildRate(gratitudeUsageCount, usedSampleCount, fallbackProfile.GratitudeUsageRate);
         var contractionUsageRate = BuildRate(contractionUsageCount, usedSampleCount, fallbackProfile.ContractionUsageRate);
         var fragmentUsageRate = BuildRate(fragmentUsageCount, usedSampleCount, fallbackProfile.FragmentUsageRate);
@@ -206,6 +254,7 @@ public sealed partial class StyleExtractor
             GreetingUsageRate: greetingUsageRate,
             SignoffUsageRate: signoffUsageRate,
             QuestionEndingRate: questionEndingRate,
+            ExclamationUsageRate: exclamationUsageRate,
             GratitudeUsageRate: gratitudeUsageRate,
             ContractionUsageRate: contractionUsageRate,
             FragmentUsageRate: fragmentUsageRate,
@@ -219,7 +268,10 @@ public sealed partial class StyleExtractor
                 averageSentenceLength,
                 typicalSentenceCountRange.Max),
             SampleSize: usedSampleCount,
-            BuiltAtUtc: DateTimeOffset.UtcNow);
+            BuiltAtUtc: DateTimeOffset.UtcNow,
+            FavoredPhrases: favoredPhrasesByShape.Count == 0 ? null : favoredPhrasesByShape,
+            FavoredPhrasesUpdatedAtUtc: favoredPhrasesByShape.Count == 0 ? null : DateTimeOffset.UtcNow,
+            ObservedDiscourseMarkers: DiscourseMarkerExtractor.Extract(authoredBodies));
     }
 
     private IEnumerable<PhraseSample> ExtractPhraseCandidates(IReadOnlyList<string> contentLines)
@@ -242,6 +294,11 @@ public sealed partial class StyleExtractor
                 continue;
             }
 
+            if (StyleProfileService.LooksLikePromotional(trimmed))
+            {
+                continue;
+            }
+
             var normalized = NormalizePhrase(trimmed);
             var wordCount = CountWords(normalized);
 
@@ -257,6 +314,105 @@ public sealed partial class StyleExtractor
 
             yield return new PhraseSample(normalized, trimmed, 1);
         }
+    }
+
+    private IEnumerable<(string Shape, PhraseSample Sample)> ExtractFavoredPhraseCandidates(IReadOnlyList<string> contentLines)
+    {
+        foreach (var line in contentLines)
+        {
+            var trimmed = line.Trim();
+            if (trimmed.Length < 18 || trimmed.Length > 120)
+            {
+                continue;
+            }
+
+            if (IsHeaderLikeLine(trimmed) || IsQuotedLine(trimmed) || LooksLikeMetadataLine(trimmed))
+            {
+                continue;
+            }
+
+            if (!_sentenceFilterPipeline.ShouldKeep(trimmed))
+            {
+                continue;
+            }
+
+            if (StyleProfileService.LooksLikePromotional(trimmed))
+            {
+                continue;
+            }
+
+            if (FavoredNamePrefixRegex().IsMatch(trimmed) &&
+                !AckOpenerRegex().IsMatch(trimmed) &&
+                !DirectAnswerOpenerRegex().IsMatch(trimmed) &&
+                !DeclineOpenerRegex().IsMatch(trimmed))
+            {
+                continue;
+            }
+
+            var normalized = NormalizePhrase(trimmed);
+            var wordCount = CountWords(normalized);
+
+            if (wordCount < 4 || wordCount > 14)
+            {
+                continue;
+            }
+
+            if (GreetingRegex().IsMatch(normalized) || ClosingRegex().IsMatch(normalized))
+            {
+                continue;
+            }
+
+            var shape = ClassifyShape(trimmed);
+            if (string.IsNullOrEmpty(shape))
+            {
+                continue;
+            }
+
+            yield return (shape, new PhraseSample(normalized, trimmed, 1));
+        }
+    }
+
+    private static string ClassifyShape(string line)
+    {
+        var endsWithQuestion = line.TrimEnd().EndsWith("?", StringComparison.Ordinal);
+        var hasAckOpener = AckOpenerRegex().IsMatch(line);
+
+        if (hasAckOpener && endsWithQuestion)
+        {
+            return "ACKNOWLEDGE_AND_ASK";
+        }
+
+        if (endsWithQuestion)
+        {
+            return string.Empty;
+        }
+
+        if (DeclineOpenerRegex().IsMatch(line))
+        {
+            return "DECLINE";
+        }
+
+        if (DirectAnswerOpenerRegex().IsMatch(line))
+        {
+            return "DIRECT_ANSWER";
+        }
+
+        if (hasAckOpener)
+        {
+            return "ACKNOWLEDGE";
+        }
+
+        if (RequestModalRegex().IsMatch(line))
+        {
+            return "CONFIRM_AND_REQUEST";
+        }
+
+        if (ConfirmVerbRegex().IsMatch(line))
+        {
+            return "CONFIRM_AND_CLOSE";
+        }
+
+        return string.Empty;
     }
 
     private static string BuildToneDescription(
@@ -613,6 +769,24 @@ public sealed partial class StyleExtractor
 
     [GeneratedRegex(@"\b(am|is|are|was|were|be|being|been|do|does|did|have|has|had|can|could|will|would|should|need|send|confirm|book|apply|begin|start|check|help|know|open|look|review|arrange|work|receive|get|let)\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
     private static partial Regex VerbRegex();
+
+    [GeneratedRegex(@"^(got it|cool|sure|ok|okay|noted|thanks|cheers)\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    private static partial Regex AckOpenerRegex();
+
+    [GeneratedRegex(@"^(yes|yep|yeah|can do|will do|i'll|i will|sounds good|sounds fine|happy to)\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    private static partial Regex DirectAnswerOpenerRegex();
+
+    [GeneratedRegex(@"^(no|sorry|i can't|i cant|won't|wont|unfortunately|not able|can't make)\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    private static partial Regex DeclineOpenerRegex();
+
+    [GeneratedRegex(@"\b(confirmed|confirm|all set|booked|sorted|sorted it|done)\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    private static partial Regex ConfirmVerbRegex();
+
+    [GeneratedRegex(@"\b(can you|could you|would you|please send|please confirm|let me know)\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    private static partial Regex RequestModalRegex();
+
+    [GeneratedRegex(@"^[A-Z][a-z]+,", RegexOptions.CultureInvariant)]
+    private static partial Regex FavoredNamePrefixRegex();
 
     private sealed record PhraseSample(string Normalized, string Original, int Count);
 

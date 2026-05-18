@@ -33,7 +33,16 @@ export function DraftQueueItem({ draft, isSelected, isExiting, onClick, onDismis
         <span className="variant-chip">
           {draft.variantCount} {draft.variantCount === 1 ? 'option' : 'options'}
         </span>
-        <div className="confidence-bar">
+        {draft.tier && (
+          <span className="tier-chip" data-tier={draft.tier}>
+            {draft.tier}
+          </span>
+        )}
+        <div className="confidence-bar" title={
+          draft.aggregateConfidence != null
+            ? `Aggregate ${Math.round(draft.aggregateConfidence * 100)}% · Top ${Math.round(draft.topConfidence * 100)}%`
+            : `Top ${Math.round(draft.topConfidence * 100)}%`
+        }>
           <div
             className="confidence-bar-fill"
             style={{ width: `${Math.round(draft.topConfidence * 100)}%` }}

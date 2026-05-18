@@ -4,6 +4,9 @@ public sealed class AutomatedSenderRule : BuiltInClassificationRule
 {
     public override string RuleName => "BUILT_IN:AUTOMATED_SENDER";
     public override string ReasonCode => ClassificationReasonCodes.AutomatedSender;
+    public override string Description =>
+        "Sender address shows automated-mailer characteristics (auto-submitted header, hashed local part, no-reply markers).";
+    public override RuleCategory Category => RuleCategory.AutomatedSender;
 
     public override RuleEvaluation Evaluate(IncomingEmail email)
     {

@@ -10,7 +10,9 @@ public sealed record DraftSetDto(
     IReadOnlyList<DraftVariantDto> Variants,
     string SourceMessageId,
     long? SelectedVariantId,
-    EmailRequestAnalysis? Analysis);
+    EmailRequestAnalysis? Analysis,
+    double? AggregateConfidence,
+    string? Tier);
 
 public sealed record DraftVariantDto(
     long Id,
@@ -18,7 +20,13 @@ public sealed record DraftVariantDto(
     string ShapeLabel,
     double ConfidenceScore,
     string Body,
-    string? GroundingWarning);
+    string? GroundingWarning,
+    string? CoverageWarning = null,
+    bool WasSelected = false,
+    bool WasEdited = false,
+    string? EditedBody = null,
+    int? EditDistance = null,
+    DateTimeOffset? EditedAtUtc = null);
 
 public sealed record DraftSetSummaryDto(
     long Id,
@@ -29,7 +37,9 @@ public sealed record DraftSetSummaryDto(
     string Status,
     int VariantCount,
     double TopConfidence,
-    string? Urgency);
+    string? Urgency,
+    double? AggregateConfidence,
+    string? Tier);
 
 public sealed record SkippedEmailDto(
     long Id,
@@ -47,4 +57,26 @@ public sealed record RunRecordDto(
     long? DraftId,
     IDictionary<string, int> SkipBuckets);
 
-public sealed record ApproveDraftRequest(long VariantId);
+public sealed record ApproveDraftRequest(long VariantId, string? EditedBody = null);
+
+public sealed record DismissDraftRequest(string? Reason = null);
+
+public sealed record PolicyRuleDto(
+    string RuleId,
+    string DisplayName,
+    string Description,
+    string Category,
+    bool DefaultEnabled,
+    bool IsUserConfigurable,
+    bool CurrentlyEnabled);
+
+public sealed record SetPolicyRuleRequest(bool Enabled);
+
+public sealed record WorkflowConfigDto(string Mode);
+
+public sealed record DraftAuditEventDto(
+    long Id,
+    string EventType,
+    DateTimeOffset EventAtUtc,
+    string? ActorUserId,
+    string? PayloadJson);

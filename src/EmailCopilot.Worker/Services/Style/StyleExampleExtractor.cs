@@ -30,6 +30,7 @@ public sealed partial class StyleExampleExtractor
 
         var selected = new List<StyleExample>();
         var normalizedBodies = new List<string>();
+        var seenExactBodies = new HashSet<string>(StringComparer.Ordinal);
         var examplesPerDomain = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
 
         foreach (var sample in orderedCandidates)
@@ -54,6 +55,12 @@ public sealed partial class StyleExampleExtractor
             }
 
             if (CountWords(authoredBody) < MinimumWordCount)
+            {
+                continue;
+            }
+
+            var exactDedupKey = NormalizeForDedup(authoredBody);
+            if (string.IsNullOrWhiteSpace(exactDedupKey) || !seenExactBodies.Add(exactDedupKey))
             {
                 continue;
             }
@@ -112,6 +119,9 @@ public sealed partial class StyleExampleExtractor
         var collapsedWhitespace = WhitespaceRegex().Replace(value, " ").Trim().ToLowerInvariant();
         return NonAlphanumericRegex().Replace(collapsedWhitespace, string.Empty);
     }
+
+    private static string NormalizeForDedup(string value) =>
+        WhitespaceRegex().Replace(value ?? string.Empty, " ").Trim().ToLowerInvariant();
 
     private static double CalculateOverlapRatio(string left, string right)
     {

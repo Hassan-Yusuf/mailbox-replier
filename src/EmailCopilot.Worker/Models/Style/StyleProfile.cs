@@ -11,6 +11,7 @@ public sealed record StyleProfile(
     double GreetingUsageRate,
     double SignoffUsageRate,
     double QuestionEndingRate,
+    double ExclamationUsageRate,
     double GratitudeUsageRate,
     double ContractionUsageRate,
     double FragmentUsageRate,
@@ -19,4 +20,9 @@ public sealed record StyleProfile(
     int TypicalSentenceCountMax,
     double FormalityScore,
     int SampleSize,
-    DateTimeOffset BuiltAtUtc);
+    DateTimeOffset BuiltAtUtc,
+    IReadOnlyDictionary<string, IReadOnlyList<string>>? AvoidPhrases = null,
+    DateTimeOffset? AvoidPhrasesUpdatedAtUtc = null,
+    IReadOnlyDictionary<string, IReadOnlyList<string>>? FavoredPhrases = null,
+    DateTimeOffset? FavoredPhrasesUpdatedAtUtc = null,
+    IReadOnlyList<DiscourseMarkerObservation>? ObservedDiscourseMarkers = null);

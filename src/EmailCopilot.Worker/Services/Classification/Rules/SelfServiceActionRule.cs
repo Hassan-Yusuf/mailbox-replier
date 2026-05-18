@@ -4,6 +4,9 @@ public sealed class SelfServiceActionRule : BuiltInClassificationRule
 {
     public override string RuleName => "BUILT_IN:SELF_SERVICE_ACTION";
     public override string ReasonCode => ClassificationReasonCodes.SelfServiceAction;
+    public override string Description =>
+        "Self-service nudge asking the user to verify, renew, reactivate, or complete an account action.";
+    public override RuleCategory Category => RuleCategory.SelfService;
 
     public override RuleEvaluation Evaluate(IncomingEmail email)
     {

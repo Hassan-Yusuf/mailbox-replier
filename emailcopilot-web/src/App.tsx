@@ -5,9 +5,10 @@ import { DraftQueue } from './components/DraftQueue';
 import { DraftDetail } from './components/DraftDetail';
 import { SkippedPage } from './pages/SkippedPage';
 import { RunsPage } from './pages/RunsPage';
+import { PoliciesPage } from './pages/PoliciesPage';
 import { useKeyboard } from './hooks/useKeyboard';
-import { approveDraft, dismissDraft, getDraftDetail, getDraftSummaries } from './api';
-import type { DraftDetail as DraftDetailType, DraftSummary } from './types';
+import { approveDraft, dismissDraft, getDraftDetail, getDraftSummaries, getWorkflowConfig } from './api';
+import type { DraftDetail as DraftDetailType, DraftSummary, WorkflowMode } from './types';
 
 function ReviewPage() {
   const [summaries, setSummaries] = useState<DraftSummary[]>([]);
@@ -21,6 +22,16 @@ function ReviewPage() {
 
   const [busy, setBusy] = useState(false);
   const [exitingIds, setExitingIds] = useState<Set<number>>(new Set());
+  const [workflowMode, setWorkflowMode] = useState<WorkflowMode>('ReviewBeforeSend');
+  const [editedBodies, setEditedBodies] = useState<Record<number, string>>({});
+
+  useEffect(() => {
+    void getWorkflowConfig()
+      .then(config => setWorkflowMode(config.mode))
+      .catch(() => {
+        // fall back to default; backend may be older
+      });
+  }, []);
 
   const sortedSummaries = [...summaries].sort((a, b) => {
     const order: Record<string, number> = { HIGH: 0, MEDIUM: 1, LOW: 2, UNKNOWN: 3 };
@@ -54,6 +65,7 @@ function ReviewPage() {
     setDetailLoading(true);
     setDetail(null);
     setActiveVariantIndex(0);
+    setEditedBodies({});
     try {
       setDetail(await getDraftDetail(id));
     } catch {
@@ -85,13 +97,17 @@ function ReviewPage() {
   }
 
   async function handleApprove(variantId: number) {
-    if (!selectedId || busy) {
+    if (!selectedId || busy || workflowMode === 'SuggestOnly') {
       return;
     }
 
+    const variant = detail?.variants.find(v => v.id === variantId);
+    const edited = editedBodies[variantId];
+    const editedToSend = variant && edited !== undefined && edited !== variant.body ? edited : undefined;
+
     setBusy(true);
     try {
-      await approveDraft(selectedId, variantId);
+      await approveDraft(selectedId, variantId, editedToSend);
       await removeFromQueue(selectedId);
     } catch (err) {
       setQueueError(err instanceof Error ? err.message : 'Could not approve draft.');
@@ -100,20 +116,24 @@ function ReviewPage() {
     }
   }
 
-  async function handleDismiss(id: number) {
+  async function handleDismiss(id: number, reason?: string) {
     if (busy) {
       return;
     }
 
     setBusy(true);
     try {
-      await dismissDraft(id);
+      await dismissDraft(id, reason);
       await removeFromQueue(id);
     } catch (err) {
       setQueueError(err instanceof Error ? err.message : 'Could not dismiss.');
     } finally {
       setBusy(false);
     }
+  }
+
+  function handleBodyChange(variantId: number, body: string) {
+    setEditedBodies(prev => ({ ...prev, [variantId]: body }));
   }
 
   const handleKey = useCallback((key: string) => {
@@ -210,9 +230,12 @@ function ReviewPage() {
           loading={detailLoading}
           busy={busy}
           activeVariantIndex={activeVariantIndex}
+          workflowMode={workflowMode}
+          editedBodies={editedBodies}
           onVariantSelect={setActiveVariantIndex}
+          onBodyChange={handleBodyChange}
           onApprove={variantId => void handleApprove(variantId)}
-          onDismiss={() => selectedId !== null && void handleDismiss(selectedId)}
+          onDismiss={reason => selectedId !== null && void handleDismiss(selectedId, reason)}
         />
       </div>
     </>
@@ -228,6 +251,7 @@ function App() {
         <Route path="/review" element={<ReviewPage />} />
         <Route path="/skipped" element={<><div /><SkippedPage /></>} />
         <Route path="/runs" element={<><div /><RunsPage /></>} />
+        <Route path="/policies" element={<><div /><PoliciesPage /></>} />
       </Routes>
     </div>
   );
